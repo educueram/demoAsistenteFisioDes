@@ -337,12 +337,134 @@ async function sendNewAppointmentNotification(appointmentData) {
 }
 
 
+/**
+ * Enviar email de confirmación de cita reagendada
+ */
+async function sendRescheduledAppointmentConfirmation(appointmentData) {
+  try {
+    if (!transporter) {
+      console.log('📧 Email no configurado - saltando envío');
+      return { success: false, reason: 'SMTP no configurado' };
+    }
+
+    if (!config.smtp.pass || config.smtp.pass.trim() === '') {
+      console.log('⚠️ SMTP_PASS vacío - necesitas configurar App Password de Gmail');
+      return { success: false, reason: 'SMTP_PASS no configurado' };
+    }
+
+    const { 
+      clientName, 
+      clientEmail, 
+      oldDate,
+      oldTime,
+      newDate, 
+      newTime, 
+      serviceName, 
+      profesionalName, 
+      codigoReserva 
+    } = appointmentData;
+
+    // Formatear fechas en español
+    const fechaAntiguaFormateada = moment.tz(oldDate, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+    const fechaNuevaFormateada = moment.tz(newDate, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+    
+    const horaAntiguaFormateada = formatTimeTo12Hour(oldTime);
+    const horaNuevaFormateada = formatTimeTo12Hour(newTime);
+
+    const emailContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f8f9fa;">
+      <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #ff9800; margin: 0;">🔄 Cita Reagendada</h1>
+          <p style="color: #6c757d; margin: 5px 0;">Tu cita ha sido reagendada exitosamente</p>
+        </div>
+
+        <!-- Cita Anterior (tachada) -->
+        <div style="background-color: #ffebee; padding: 15px; border-radius: 8px; margin-bottom: 20px; opacity: 0.7;">
+          <h3 style="color: #c62828; margin-top: 0; text-decoration: line-through;">📅 Cita Anterior (Cancelada)</h3>
+          <p style="text-decoration: line-through;"><strong>📅 Fecha:</strong> ${fechaAntiguaFormateada}</p>
+          <p style="text-decoration: line-through;"><strong>⏰ Hora:</strong> ${horaAntiguaFormateada}</p>
+        </div>
+
+        <!-- Nueva Cita -->
+        <div style="background-color: #e8f5e9; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+          <h2 style="color: #2e7d32; margin-top: 0;">📅 Nueva Cita Confirmada</h2>
+          <p><strong>👤 Cliente:</strong> ${clientName}</p>
+          <p><strong>📅 Nueva Fecha:</strong> ${fechaNuevaFormateada}</p>
+          <p><strong>⏰ Nueva Hora:</strong> ${horaNuevaFormateada}</p>
+          <p><strong>👨‍⚕️ Especialista:</strong> ${profesionalName}</p>
+          <p><strong>🩺 Servicio:</strong> ${serviceName}</p>
+          <p><strong>🎟️ Código de Reserva:</strong> <span style="font-size: 18px; font-weight: bold; color: #d32f2f;">${codigoReserva}</span></p>
+        </div>
+
+        <div style="background-color: #fff3e0; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+          <h3 style="color: #ef6c00; margin-top: 0;">⚠️ Importante</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li>Llega 10 minutos antes de tu cita</li>
+            <li>Guarda tu código de reserva: <strong>${codigoReserva}</strong></li>
+            <li>Si necesitas cancelar o reagendar, contacta con al menos 2 horas de anticipación</li>
+          </ul>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+          <p style="color: #6c757d; margin: 0;">
+            <strong>${config.business.name}</strong><br>
+            ${config.business.phone}<br>
+            📧 ${config.business.email}<br>
+            📍 ${config.business.address}
+          </p>
+        </div>
+
+      </div>
+    </div>
+    `;
+
+    const mailOptions = {
+      from: `"${config.business.name}" <${config.smtp.user}>`,
+      to: clientEmail,
+      subject: `🔄 Cita Reagendada - ${fechaNuevaFormateada} a las ${horaNuevaFormateada} - Código: ${codigoReserva}`,
+      html: emailContent
+    };
+
+    console.log('📧 === ENVIANDO EMAIL DE REAGENDAMIENTO ===');
+    console.log('Para:', clientEmail);
+    console.log('Asunto:', mailOptions.subject);
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('✅ Email de reagendamiento enviado exitosamente:', result.messageId);
+
+    return { 
+      success: true, 
+      messageId: result.messageId,
+      to: clientEmail 
+    };
+
+  } catch (error) {
+    console.error('❌ Error enviando email de reagendamiento:', error.message);
+    
+    if (error.message.includes('Username and Password not accepted')) {
+      console.error('🔐 PROBLEMA DE CREDENCIALES:');
+      console.error('   1. Verifica que SMTP_USER sea: goparirisvaleria@gmail.com');
+      console.error('   2. SMTP_PASS debe ser un App Password de Gmail (16 caracteres)');
+      console.error('   3. Ve a https://myaccount.google.com → Seguridad → Contraseñas de aplicaciones');
+      console.error('   4. Genera una nueva contraseña de aplicación para "Mail"');
+    }
+    
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+}
+
 // Inicializar servicio al cargar el módulo
 const emailServiceReady = initializeEmailService();
 
 module.exports = { 
   sendAppointmentConfirmation, 
   sendNewAppointmentNotification,
+  sendRescheduledAppointmentConfirmation,
   emailServiceReady,
   initializeEmailService 
 }; 

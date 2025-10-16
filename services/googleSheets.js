@@ -285,6 +285,58 @@ async function updateClientStatus(codigoReserva, newStatus) {
 }
 
 /**
+ * Actualizar fecha y hora de una cita en la hoja CLIENTES
+ */
+async function updateClientAppointmentDateTime(codigoReserva, newDate, newTime) {
+  try {
+    console.log(`📝 Actualizando fecha y hora de cita ${codigoReserva}...`);
+    console.log(`   Nueva fecha: ${newDate}, Nueva hora: ${newTime}`);
+    
+    const sheets = await getSheetsInstance();
+    
+    // Obtener todos los datos de la hoja CLIENTES
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: config.business.sheetId,
+      range: config.sheets.clients
+    });
+
+    const data = response.data.values || [];
+    
+    // Buscar la fila con el código de reserva
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][1] && data[i][1].toUpperCase() === codigoReserva.toUpperCase()) {
+        // Actualizar fecha (columna G = índice 6) y hora (columna H = índice 7)
+        await sheets.spreadsheets.values.batchUpdate({
+          spreadsheetId: config.business.sheetId,
+          resource: {
+            valueInputOption: 'RAW',
+            data: [
+              {
+                range: `${config.sheets.clients}!G${i + 1}`,
+                values: [[newDate]]
+              },
+              {
+                range: `${config.sheets.clients}!H${i + 1}`,
+                values: [[newTime]]
+              }
+            ]
+          }
+        });
+
+        console.log(`✅ Fecha y hora actualizadas: ${codigoReserva} -> ${newDate} ${newTime}`);
+        return true;
+      }
+    }
+
+    console.log(`⚠️ No se encontró la cita con código: ${codigoReserva}`);
+    return false;
+  } catch (error) {
+    console.error('❌ Error actualizando fecha y hora:', error.message);
+    return false;
+  }
+}
+
+/**
  * Obtener datos de un cliente por código de reserva
  */
 async function getClientDataByReservationCode(codigoReserva) {
@@ -465,6 +517,7 @@ module.exports = {
   findWorkingHours,
   saveClientDataOriginal,
   updateClientStatus,
+  updateClientAppointmentDateTime,
   ensureClientsSheet,
   getClientDataByReservationCode,
   consultaDatosPacientePorTelefono

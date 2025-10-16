@@ -9,9 +9,9 @@ const swaggerUi = require('swagger-ui-express');
 // Importar configuración y servicios
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
-const { getSheetData, findData, findWorkingHours, updateClientStatus, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
+const { getSheetData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
 const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, formatTimeTo12Hour } = require('./services/googleCalendar');
-const { sendAppointmentConfirmation, sendNewAppointmentNotification, emailServiceReady } = require('./services/emailService');
+const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
 
 const app = express();
 const PORT = config.server.port;
@@ -537,6 +537,7 @@ app.get('/', (req, res) => {
       consulta_disponibilidad: `GET ${serverUrl}/api/consulta-disponibilidad`,
       agenda_cita: `POST ${serverUrl}/api/agenda-cita`,
       cancela_cita: `POST ${serverUrl}/api/cancela-cita`,
+      reagenda_cita: `POST ${serverUrl}/api/reagenda-cita`,
       consulta_fecha: `GET ${serverUrl}/api/consulta-fecha-actual`,
       consulta_datos_paciente: `GET ${serverUrl}/api/consulta-datos-paciente`
     },
@@ -964,6 +965,200 @@ app.post('/api/cancela-cita', async (req, res) => {
   } catch (error) {
     console.error('💥 Error en cancelación:', error.message);
     return res.json({ respuesta: '🤖 Ha ocurrido un error inesperado al cancelar la cita.' });
+  }
+});
+
+/**
+ * ENDPOINT: Reagendar cita
+ */
+app.post('/api/reagenda-cita', async (req, res) => {
+  try {
+    console.log('🔄 === INICIO REAGENDAMIENTO ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+    
+    const { codigo_reserva, fecha_reagendada, hora_reagendada } = req.body;
+
+    // PASO 1: Validar parámetros
+    if (!codigo_reserva || !fecha_reagendada || !hora_reagendada) {
+      return res.json({ 
+        respuesta: '⚠️ Error: Faltan datos. Se requiere codigo_reserva, fecha_reagendada y hora_reagendada.' 
+      });
+    }
+
+    console.log(`📊 Parámetros: código=${codigo_reserva}, fecha=${fecha_reagendada}, hora=${hora_reagendada}`);
+
+    // PASO 2: Obtener información de la cita desde Google Sheets
+    console.log('📋 Obteniendo información de la cita...');
+    const clientData = await getClientDataByReservationCode(codigo_reserva);
+    
+    if (!clientData) {
+      console.log(`❌ No se encontró cita con código: ${codigo_reserva}`);
+      return res.json({ 
+        respuesta: `❌ No se encontró ninguna cita con el código de reserva ${codigo_reserva.toUpperCase()}. Verifica que el código sea correcto.` 
+      });
+    }
+
+    console.log('✅ Información de la cita obtenida:', clientData);
+
+    // Guardar información antigua para el correo
+    const oldDate = clientData.date;
+    const oldTime = clientData.time;
+
+    // PASO 3: Obtener configuración de calendario y servicio
+    let sheetData;
+    try {
+      sheetData = await getSheetData();
+      console.log('✅ Configuración obtenida correctamente');
+    } catch (error) {
+      console.error('❌ Error obteniendo configuración:', error.message);
+      return res.json({ respuesta: `❌ Error obteniendo configuración: ${error.message}` });
+    }
+
+    const calendarId = findData('1', sheetData.calendars, 0, 1);
+    if (!calendarId) {
+      console.log('❌ Calendario no encontrado');
+      return res.json({ respuesta: '🚫 Error: El calendario solicitado no fue encontrado.' });
+    }
+
+    console.log(`📅 Calendar ID: ${calendarId}`);
+
+    // PASO 4: Eliminar evento del Google Calendar
+    console.log('🗑️ Eliminando evento antiguo del calendario...');
+    const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigo_reserva);
+    
+    if (!cancelResult.success) {
+      console.log('⚠️ No se pudo eliminar el evento antiguo, pero continuaremos...');
+    } else {
+      console.log('✅ Evento antiguo eliminado exitosamente');
+    }
+
+    // PASO 5: Validar nueva fecha/hora
+    const startTimeMoment = moment.tz(`${fecha_reagendada} ${hora_reagendada}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
+    const endTimeMoment = startTimeMoment.clone().add(1, 'hour');
+
+    if (!startTimeMoment.isValid()) {
+      return res.json({ 
+        respuesta: '⚠️ Error: Formato de fecha u hora inválido. Usa formato YYYY-MM-DD para fecha y HH:MM para hora.' 
+      });
+    }
+
+    console.log(`📅 Nueva fecha/hora: ${startTimeMoment.format('YYYY-MM-DD HH:mm')}`);
+
+    // PASO 6: Crear nuevo evento en Google Calendar
+    console.log('📝 Creando nuevo evento en el calendario...');
+    
+    const eventTitle = `Cita: ${clientData.clientName} (${codigo_reserva})`;
+    const eventDescription = `
+Cliente: ${clientData.clientName}
+Teléfono: ${clientData.clientPhone}
+Email: ${clientData.clientEmail}
+Servicio: ${clientData.serviceName}
+Especialista: ${clientData.profesionalName}
+Duración: 60 min.
+Estado: REAGENDADA
+Agendado por: Agente de WhatsApp`;
+
+    const eventData = {
+      title: eventTitle,
+      description: eventDescription,
+      startTime: startTimeMoment.toDate(),
+      endTime: endTimeMoment.toDate()
+    };
+
+    const createResult = await createEventOriginal(calendarId, eventData);
+
+    if (!createResult.success) {
+      console.log('❌ Error creando nuevo evento');
+      return res.json({ 
+        respuesta: '❌ Error creando la nueva cita en el calendario. El horario podría estar ocupado.' 
+      });
+    }
+
+    console.log('✅ Nuevo evento creado exitosamente');
+
+    // PASO 7: Actualizar fecha y hora en Google Sheets
+    console.log('📝 Actualizando fecha y hora en Google Sheets...');
+    const updateDateTimeResult = await updateClientAppointmentDateTime(
+      codigo_reserva, 
+      fecha_reagendada, 
+      hora_reagendada
+    );
+
+    if (!updateDateTimeResult) {
+      console.log('⚠️ No se pudo actualizar fecha/hora en Google Sheets');
+    } else {
+      console.log('✅ Fecha y hora actualizadas en Google Sheets');
+    }
+
+    // PASO 8: Cambiar estado a REAGENDADA
+    console.log('📝 Actualizando estado a REAGENDADA...');
+    try {
+      await updateClientStatus(codigo_reserva, 'REAGENDADA');
+      console.log('✅ Estado actualizado a REAGENDADA');
+    } catch (updateError) {
+      console.error('⚠️ Error actualizando estado:', updateError.message);
+    }
+
+    // PASO 9: Enviar correo electrónico de confirmación
+    console.log('📧 === ENVÍO DE EMAIL ===');
+    try {
+      if (emailServiceReady && clientData.clientEmail && clientData.clientEmail !== 'Sin Email') {
+        const emailData = {
+          clientName: clientData.clientName,
+          clientEmail: clientData.clientEmail,
+          oldDate: oldDate,
+          oldTime: oldTime,
+          newDate: fecha_reagendada,
+          newTime: hora_reagendada,
+          serviceName: clientData.serviceName,
+          profesionalName: clientData.profesionalName,
+          codigoReserva: codigo_reserva.toUpperCase()
+        };
+        
+        console.log('📧 Enviando confirmación de reagendamiento al cliente...');
+        const emailResult = await sendRescheduledAppointmentConfirmation(emailData);
+        
+        if (emailResult.success) {
+          console.log('✅ Email de reagendamiento enviado exitosamente');
+        } else {
+          console.log('⚠️ Email no enviado:', emailResult.reason || emailResult.error);
+        }
+      } else {
+        console.log('⚠️ Email saltado - SMTP no configurado o email inválido');
+      }
+    } catch (emailError) {
+      console.error('❌ Error enviando email (no crítico):', emailError.message);
+    }
+
+    // PASO 10: Preparar respuesta con resumen
+    const time12h = formatTimeTo12Hour(hora_reagendada);
+    const fechaFormateada = moment.tz(fecha_reagendada, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+
+    const finalResponse = {
+      respuesta: `🔄 ¡Cita reagendada exitosamente! ✨
+
+📅 Detalles de tu nueva cita:
+• Fecha: ${fechaFormateada}
+• Hora: ${time12h}
+• Cliente: ${clientData.clientName}
+• Servicio: ${clientData.serviceName}
+• Especialista: ${clientData.profesionalName}
+
+🎟️ TU CÓDIGO DE RESERVA: ${codigo_reserva.toUpperCase()}
+
+✅ Tu cita ha sido reagendada correctamente.
+📧 Recibirás un correo de confirmación.
+
+¡Gracias por confiar en nosotros! 🌟`
+    };
+
+    console.log('🎉 === REAGENDAMIENTO EXITOSO ===');
+    return res.json(finalResponse);
+
+  } catch (error) {
+    console.error('💥 Error en reagendamiento:', error.message);
+    console.error('Stack:', error.stack);
+    return res.json({ respuesta: '🤖 Ha ocurrido un error inesperado al reagendar la cita.' });
   }
 });
 
@@ -2899,6 +3094,58 @@ const swaggerDocument = {
         }
       }
     },
+    '/api/reagenda-cita': {
+      post: {
+        summary: 'Reagenda una cita existente',
+        description: 'Reagenda una cita a una nueva fecha y hora usando el código de reserva. Elimina el evento anterior del calendario, crea uno nuevo, actualiza los datos en Google Sheets y envía correo de confirmación.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['codigo_reserva', 'fecha_reagendada', 'hora_reagendada'],
+                properties: {
+                  codigo_reserva: { 
+                    type: 'string', 
+                    example: 'ABC123',
+                    description: 'Código de reserva de la cita a reagendar'
+                  },
+                  fecha_reagendada: { 
+                    type: 'string', 
+                    example: '2025-10-20',
+                    description: 'Nueva fecha en formato YYYY-MM-DD'
+                  },
+                  hora_reagendada: { 
+                    type: 'string', 
+                    example: '15:00',
+                    description: 'Nueva hora en formato HH:MM (24h)'
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Respuesta de reagendamiento',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    respuesta: { 
+                      type: 'string',
+                      example: '🔄 ¡Cita reagendada exitosamente! ✨\n\n📅 Detalles de tu nueva cita:\n• Fecha: lunes, 20 de octubre de 2025\n• Hora: 3:00 PM\n• Cliente: Juan Pérez\n• Servicio: Consulta de valoración\n• Especialista: Dr. Juan\n\n🎟️ TU CÓDIGO DE RESERVA: ABC123'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     '/api/consulta-fecha-actual': {
       get: {
         summary: 'Obtiene la fecha y hora actual',
@@ -3267,6 +3514,7 @@ app.listen(PORT, () => {
   console.log(`   GET  ${serverUrl}/api/consulta-disponibilidad`);
   console.log(`   POST ${serverUrl}/api/agenda-cita`);
   console.log(`   POST ${serverUrl}/api/cancela-cita`);
+  console.log(`   POST ${serverUrl}/api/reagenda-cita`);
   console.log(`   GET  ${serverUrl}/api/consulta-fecha-actual`);
   console.log(`   GET  ${serverUrl}/api/eventos/:fecha`);
   console.log(`   POST ${serverUrl}/api/debug-agenda`);
