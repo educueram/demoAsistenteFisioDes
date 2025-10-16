@@ -1022,16 +1022,100 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📅 Calendar ID: ${calendarId}`);
 
-    // PASO 4: Validar nueva fecha/hora
+    // PASO 4: Validar nueva fecha/hora (igual que en agenda-cita)
+    const now = moment().tz(config.timezone.default);
     const startTimeMoment = moment.tz(`${fecha_reagendada} ${hora_reagendada}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
     const endTimeMoment = startTimeMoment.clone().add(1, 'hour');
+    const minimumBookingTime = moment(now).add(1, 'hours');
+
+    console.log('=== VALIDACIÓN DE FECHA Y TIEMPO (ZONA HORARIA MÉXICO) ===');
+    console.log('now:', now.format('YYYY-MM-DD HH:mm:ss z'));
+    console.log('startTime:', startTimeMoment.format('YYYY-MM-DD HH:mm:ss z'));
+    console.log('minimumBookingTime:', minimumBookingTime.format('YYYY-MM-DD HH:mm:ss z'));
 
     if (!startTimeMoment.isValid()) {
+      console.log('❌ ERROR: Formato de fecha/hora inválido');
       return res.json({ 
         respuesta: '⚠️ Error: Formato de fecha u hora inválido. Usa formato YYYY-MM-DD para fecha y HH:MM para hora.' 
       });
     }
 
+    // VALIDACIÓN 1: No permitir fechas en el pasado
+    const startOfToday = now.clone().startOf('day');
+    const requestedDate = startTimeMoment.clone().startOf('day');
+    
+    if (requestedDate.isBefore(startOfToday)) {
+      console.log('❌ ERROR: Fecha en el pasado');
+      console.log(`   - Fecha solicitada: ${requestedDate.format('YYYY-MM-DD')}`);
+      console.log(`   - Hoy: ${startOfToday.format('YYYY-MM-DD')}`);
+      
+      return res.json({ 
+        respuesta: '❌ No puedes reagendar citas para fechas pasadas.\n\n🔍 Por favor, selecciona una fecha de hoy en adelante.' 
+      });
+    }
+
+    // VALIDACIÓN 2: Verificar día de la semana (Domingo no se trabaja)
+    const dayOfWeek = startTimeMoment.day(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
+    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+    
+    console.log(`📅 Día de la semana: ${dayNames[dayOfWeek]} (${dayOfWeek})`);
+    
+    if (dayOfWeek === 0) { // Domingo
+      console.log(`🚫 DOMINGO - No hay servicio los domingos`);
+      return res.json({ 
+        respuesta: '🚫 No hay servicio los domingos. Por favor, selecciona otro día de la semana (Lunes a Sábado).' 
+      });
+    }
+
+    // VALIDACIÓN 3: Horario especial de Sábado (10:00 AM - 1:00 PM)
+    if (dayOfWeek === 6) { // Sábado
+      const hour = startTimeMoment.hour();
+      console.log(`📅 SÁBADO - Verificando horario especial (hora: ${hour})`);
+      
+      if (hour < config.workingHours.saturday.startHour || hour >= config.workingHours.saturday.endHour) {
+        const saturdayStart = config.workingHours.saturday.startHour;
+        const saturdayEnd = config.workingHours.saturday.endHour;
+        
+        return res.json({ 
+          respuesta: `⚠️ Los sábados solo se atiende de ${saturdayStart}:00 AM a ${saturdayEnd}:00 PM.\n\n🔍 Por favor, selecciona un horario dentro de este rango o elige otro día.` 
+        });
+      }
+      console.log('✅ Horario válido para sábado');
+    }
+
+    // VALIDACIÓN 4: Tiempo mínimo de anticipación para el mismo día
+    const isToday = startTimeMoment.isSame(now, 'day');
+    console.log('isToday:', isToday);
+    console.log('startTime < minimumBookingTime:', startTimeMoment.isBefore(minimumBookingTime));
+    
+    if (isToday && startTimeMoment.isBefore(minimumBookingTime)) {
+      const time12h = formatTimeTo12Hour(hora_reagendada);
+      console.log('❌ ERROR: Cita demasiado pronto (menos de 1 hora)');
+      
+      // Encontrar siguiente día hábil
+      const nextWorkingDay = findNextWorkingDay('1', now, sheetData.hours);
+      const nextWorkingDayName = formatDateToSpanishPremium(nextWorkingDay.toDate());
+      const nextWorkingDateStr = nextWorkingDay.format('YYYY-MM-DD');
+      
+      return res.json({ 
+        respuesta: `🤚 Debes reagendar con al menos una hora de anticipación. No puedes reservar para las ${time12h} de hoy.\n\n📅 El siguiente día hábil es: ${nextWorkingDayName} (${nextWorkingDateStr})\n\n🔍 Te recomiendo consultar la disponibilidad para esa fecha antes de reagendar tu cita.` 
+      });
+    }
+
+    // VALIDACIÓN 5: Horario laboral normal (Lunes a Viernes: 10 AM - 7 PM)
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) { // Lunes a Viernes
+      const hour = startTimeMoment.hour();
+      console.log(`📅 DÍA LABORAL - Verificando horario (hora: ${hour})`);
+      
+      if (hour < config.workingHours.startHour || hour >= config.workingHours.endHour) {
+        return res.json({ 
+          respuesta: `⚠️ El horario de atención es de ${config.workingHours.startHour}:00 AM a ${config.workingHours.endHour}:00 PM.\n\n🔍 Por favor, selecciona un horario dentro de este rango.` 
+        });
+      }
+      console.log('✅ Horario válido para día laboral');
+    }
+
+    console.log('✅ VALIDACIONES COMPLETADAS - Fecha y hora válidas');
     console.log(`📅 Nueva fecha/hora: ${startTimeMoment.format('YYYY-MM-DD HH:mm')}`);
 
     // PASO 5: Crear/actualizar evento en Google Calendar con ID personalizado
