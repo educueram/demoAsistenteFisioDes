@@ -10,7 +10,7 @@ const swaggerUi = require('swagger-ui-express');
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
 const { getSheetData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
-const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, formatTimeTo12Hour } = require('./services/googleCalendar');
+const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
 
 const app = express();
@@ -1022,17 +1022,7 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📅 Calendar ID: ${calendarId}`);
 
-    // PASO 4: Eliminar evento del Google Calendar
-    console.log('🗑️ Eliminando evento antiguo del calendario...');
-    const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigo_reserva);
-    
-    if (!cancelResult.success) {
-      console.log('⚠️ No se pudo eliminar el evento antiguo, pero continuaremos...');
-    } else {
-      console.log('✅ Evento antiguo eliminado exitosamente');
-    }
-
-    // PASO 5: Validar nueva fecha/hora
+    // PASO 4: Validar nueva fecha/hora
     const startTimeMoment = moment.tz(`${fecha_reagendada} ${hora_reagendada}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
     const endTimeMoment = startTimeMoment.clone().add(1, 'hour');
 
@@ -1044,8 +1034,8 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📅 Nueva fecha/hora: ${startTimeMoment.format('YYYY-MM-DD HH:mm')}`);
 
-    // PASO 6: Crear nuevo evento en Google Calendar
-    console.log('📝 Creando nuevo evento en el calendario...');
+    // PASO 5: Crear/actualizar evento en Google Calendar con ID personalizado
+    console.log('📝 Creando/actualizando evento en el calendario con ID personalizado...');
     
     const eventTitle = `Cita: ${clientData.clientName} (${codigo_reserva})`;
     const eventDescription = `
@@ -1065,18 +1055,21 @@ Agendado por: Agente de WhatsApp`;
       endTime: endTimeMoment.toDate()
     };
 
-    const createResult = await createEventOriginal(calendarId, eventData);
+    // Usar createEventWithCustomId que crea o actualiza según sea necesario
+    // Esto mantiene el mismo código de reserva como ID del evento
+    const createResult = await createEventWithCustomId(calendarId, eventData, codigo_reserva);
 
     if (!createResult.success) {
-      console.log('❌ Error creando nuevo evento');
+      console.log('❌ Error creando/actualizando evento');
+      console.log('❌ Detalle del error:', createResult.error);
       return res.json({ 
-        respuesta: '❌ Error creando la nueva cita en el calendario. El horario podría estar ocupado.' 
+        respuesta: `❌ Error reagendando la cita en el calendario: ${createResult.error || 'El horario podría estar ocupado'}` 
       });
     }
 
-    console.log('✅ Nuevo evento creado exitosamente');
+    console.log('✅ Evento creado/actualizado exitosamente con ID personalizado');
 
-    // PASO 7: Actualizar fecha y hora en Google Sheets
+    // PASO 6: Actualizar fecha y hora en Google Sheets
     console.log('📝 Actualizando fecha y hora en Google Sheets...');
     const updateDateTimeResult = await updateClientAppointmentDateTime(
       codigo_reserva, 
@@ -1090,7 +1083,7 @@ Agendado por: Agente de WhatsApp`;
       console.log('✅ Fecha y hora actualizadas en Google Sheets');
     }
 
-    // PASO 8: Cambiar estado a REAGENDADA
+    // PASO 7: Cambiar estado a REAGENDADA
     console.log('📝 Actualizando estado a REAGENDADA...');
     try {
       await updateClientStatus(codigo_reserva, 'REAGENDADA');
@@ -1099,7 +1092,7 @@ Agendado por: Agente de WhatsApp`;
       console.error('⚠️ Error actualizando estado:', updateError.message);
     }
 
-    // PASO 9: Enviar correo electrónico de confirmación
+    // PASO 8: Enviar correo electrónico de confirmación
     console.log('📧 === ENVÍO DE EMAIL ===');
     try {
       if (emailServiceReady && clientData.clientEmail && clientData.clientEmail !== 'Sin Email') {
@@ -1130,7 +1123,7 @@ Agendado por: Agente de WhatsApp`;
       console.error('❌ Error enviando email (no crítico):', emailError.message);
     }
 
-    // PASO 10: Preparar respuesta con resumen
+    // PASO 9: Preparar respuesta con resumen
     const time12h = formatTimeTo12Hour(hora_reagendada);
     const fechaFormateada = moment.tz(fecha_reagendada, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
 

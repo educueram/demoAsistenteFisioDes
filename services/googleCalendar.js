@@ -712,6 +712,124 @@ async function createEventOriginal(calendarId, eventData) {
 }
 
 /**
+ * Crear o actualizar evento en Google Calendar con ID personalizado (para reagendamiento)
+ * Usa el código de reserva original como ID del evento
+ */
+async function createEventWithCustomId(calendarId, eventData, customEventId) {
+  try {
+    console.log(`📝 === CREANDO/ACTUALIZANDO EVENTO CON ID PERSONALIZADO ===`);
+    console.log(`📅 Calendar: ${calendarId}`);
+    console.log(`🎟️ Custom Event ID: ${customEventId}`);
+    console.log(`📊 Datos:`, eventData);
+
+    const calendar = await getCalendarInstance();
+
+    // Generar ID válido para Google Calendar (debe ser alfanumérico minúsculas)
+    const eventId = customEventId.toLowerCase().replace(/[^a-z0-9]/g, '');
+    console.log(`🔑 ID del evento (normalizado): ${eventId}`);
+
+    // PASO 1: Verificar si el evento ya existe
+    let existingEvent = null;
+    try {
+      const getResponse = await calendar.events.get({
+        calendarId: calendarId,
+        eventId: eventId
+      });
+      existingEvent = getResponse.data;
+      console.log(`✅ Evento existente encontrado: ${existingEvent.id}`);
+    } catch (error) {
+      if (error.code === 404) {
+        console.log(`📋 Evento no existe, se creará uno nuevo`);
+      } else {
+        console.log(`⚠️ Error verificando evento existente: ${error.message}`);
+      }
+    }
+
+    // PASO 2: Verificar conflictos (excluyendo el evento actual si existe)
+    const conflictingEventsResponse = await calendar.events.list({
+      calendarId: calendarId,
+      timeMin: eventData.startTime.toISOString(),
+      timeMax: eventData.endTime.toISOString(),
+      singleEvents: true
+    });
+
+    const allEvents = conflictingEventsResponse.data.items || [];
+    // Filtrar el evento actual (si existe) de los conflictos
+    const conflictingEvents = allEvents.filter(event => event.id !== eventId);
+    
+    console.log(`🔍 Total eventos en el horario: ${allEvents.length}`);
+    console.log(`🔍 Eventos conflictivos (excluyendo el actual): ${conflictingEvents.length}`);
+
+    if (conflictingEvents.length > 0) {
+      console.log(`❌ CONFLICTO: Horario ya ocupado por otro evento`);
+      conflictingEvents.forEach(evt => {
+        console.log(`   - Conflicto con: "${evt.summary}" (ID: ${evt.id})`);
+      });
+      return {
+        success: false,
+        error: 'CONFLICTO',
+        conflictingEvents: conflictingEvents.length,
+        message: `❌ ¡Demasiado tarde! El horario ya fue reservado.`
+      };
+    }
+
+    // PASO 3: Preparar datos del evento
+    const startTimeFormatted = moment(eventData.startTime).tz(config.timezone.default).format();
+    const endTimeFormatted = moment(eventData.endTime).tz(config.timezone.default).format();
+
+    const event = {
+      summary: eventData.title,
+      description: eventData.description,
+      start: {
+        dateTime: startTimeFormatted,
+        timeZone: config.timezone.default
+      },
+      end: {
+        dateTime: endTimeFormatted,
+        timeZone: config.timezone.default
+      }
+    };
+
+    let response;
+    if (existingEvent) {
+      // ACTUALIZAR evento existente
+      console.log(`🔄 Actualizando evento existente: "${event.summary}"`);
+      response = await calendar.events.update({
+        calendarId: calendarId,
+        eventId: eventId,
+        resource: event
+      });
+      console.log(`✅ Evento actualizado con ID: ${response.data.id}`);
+    } else {
+      // CREAR nuevo evento con ID personalizado
+      event.id = eventId;
+      console.log(`📝 Creando nuevo evento: "${event.summary}"`);
+      response = await calendar.events.insert({
+        calendarId: calendarId,
+        resource: event
+      });
+      console.log(`✅ Evento creado con ID personalizado: ${response.data.id}`);
+    }
+
+    return {
+      success: true,
+      event: response.data,
+      codigoReserva: customEventId.toUpperCase(),
+      message: '✅ Evento creado/actualizado exitosamente'
+    };
+
+  } catch (error) {
+    console.error(`❌ Error creando/actualizando evento: ${error.message}`);
+    console.error(`📚 Detalle del error:`, error);
+    return {
+      success: false,
+      error: error.message,
+      message: '❌ Error creando evento en el calendario'
+    };
+  }
+}
+
+/**
  * Formatear tiempo en formato HH:MM
  */
 function formatTime(date) {
@@ -783,5 +901,6 @@ module.exports = {
   generateReservationCodeOriginal,
   cancelEventByReservationCodeOriginal,
   createEventOriginal,
+  createEventWithCustomId,
   formatTimeTo12Hour
 }; 
