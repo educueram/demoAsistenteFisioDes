@@ -10,7 +10,7 @@ const swaggerUi = require('swagger-ui-express');
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
 const { getSheetData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
-const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, formatTimeTo12Hour } = require('./services/googleCalendar');
+const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, generateUniqueReservationCode, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
 
 const app = express();
@@ -1022,7 +1022,17 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📅 Calendar ID: ${calendarId}`);
 
-    // PASO 4: Validar nueva fecha/hora (igual que en agenda-cita)
+    // PASO 4: Eliminar evento antiguo del calendario
+    console.log('🗑️ Eliminando evento antiguo del calendario...');
+    const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigo_reserva);
+    
+    if (cancelResult.success) {
+      console.log('✅ Evento antiguo eliminado exitosamente');
+    } else {
+      console.log('⚠️ No se pudo eliminar el evento antiguo (puede que ya no exista)');
+    }
+
+    // PASO 5: Validar nueva fecha/hora (igual que en agenda-cita)
     const now = moment().tz(config.timezone.default);
     const startTimeMoment = moment.tz(`${fecha_reagendada} ${hora_reagendada}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
     const endTimeMoment = startTimeMoment.clone().add(1, 'hour');
@@ -1118,8 +1128,8 @@ app.post('/api/reagenda-cita', async (req, res) => {
     console.log('✅ VALIDACIONES COMPLETADAS - Fecha y hora válidas');
     console.log(`📅 Nueva fecha/hora: ${startTimeMoment.format('YYYY-MM-DD HH:mm')}`);
 
-    // PASO 5: Crear/actualizar evento en Google Calendar con ID personalizado
-    console.log('📝 Creando/actualizando evento en el calendario con ID personalizado...');
+    // PASO 6: Crear evento con ID personalizado en Google Calendar
+    console.log('📝 Creando evento en el calendario con ID personalizado...');
     
     const eventTitle = `Cita: ${clientData.clientName} (${codigo_reserva})`;
     const eventDescription = `
@@ -1139,21 +1149,20 @@ Agendado por: Agente de WhatsApp`;
       endTime: endTimeMoment.toDate()
     };
 
-    // Usar createEventWithCustomId que crea o actualiza según sea necesario
-    // Esto mantiene el mismo código de reserva como ID del evento
+    // Usar createEventWithCustomId para crear el nuevo evento con el código como ID
     const createResult = await createEventWithCustomId(calendarId, eventData, codigo_reserva);
 
     if (!createResult.success) {
-      console.log('❌ Error creando/actualizando evento');
+      console.log('❌ Error creando evento');
       console.log('❌ Detalle del error:', createResult.error);
       return res.json({ 
         respuesta: `❌ Error reagendando la cita en el calendario: ${createResult.error || 'El horario podría estar ocupado'}` 
       });
     }
 
-    console.log('✅ Evento creado/actualizado exitosamente con ID personalizado');
+    console.log('✅ Evento creado exitosamente con ID personalizado');
 
-    // PASO 6: Actualizar fecha y hora en Google Sheets
+    // PASO 7: Actualizar fecha y hora en Google Sheets
     console.log('📝 Actualizando fecha y hora en Google Sheets...');
     const updateDateTimeResult = await updateClientAppointmentDateTime(
       codigo_reserva, 
@@ -1167,7 +1176,7 @@ Agendado por: Agente de WhatsApp`;
       console.log('✅ Fecha y hora actualizadas en Google Sheets');
     }
 
-    // PASO 7: Cambiar estado a REAGENDADA
+    // PASO 8: Cambiar estado a REAGENDADA
     console.log('📝 Actualizando estado a REAGENDADA...');
     try {
       await updateClientStatus(codigo_reserva, 'REAGENDADA');
@@ -1176,7 +1185,7 @@ Agendado por: Agente de WhatsApp`;
       console.error('⚠️ Error actualizando estado:', updateError.message);
     }
 
-    // PASO 8: Enviar correo electrónico de confirmación
+    // PASO 9: Enviar correo electrónico de confirmación
     console.log('📧 === ENVÍO DE EMAIL ===');
     try {
       if (emailServiceReady && clientData.clientEmail && clientData.clientEmail !== 'Sin Email') {
@@ -1207,7 +1216,7 @@ Agendado por: Agente de WhatsApp`;
       console.error('❌ Error enviando email (no crítico):', emailError.message);
     }
 
-    // PASO 9: Preparar respuesta con resumen
+    // PASO 10: Preparar respuesta con resumen
     const time12h = formatTimeTo12Hour(hora_reagendada);
     const fechaFormateada = moment.tz(fecha_reagendada, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
 
@@ -1655,15 +1664,20 @@ app.post('/api/agenda-cita', async (req, res) => {
       return res.json({ respuesta: '🚫 Error: El servicio solicitado no fue encontrado.' });
     }
 
-    // PASO 4: CREAR EVENTO (lógica original con zona horaria corregida)
+    // PASO 4: GENERAR CÓDIGO DE RESERVA ÚNICO
+    const codigoReserva = generateUniqueReservationCode();
+    console.log('🎟️ Código de reserva generado:', codigoReserva);
+
+    // PASO 5: CREAR EVENTO CON ID PERSONALIZADO
     const endTime = moment(startTime).add(parseInt(serviceDuration), 'minutes');
     
     console.log('=== DATOS DEL EVENTO ===');
     console.log('startTime final:', startTime.format('YYYY-MM-DD HH:mm:ss z'));
     console.log('endTime final:', endTime.format('YYYY-MM-DD HH:mm:ss z'));
     console.log('serviceDuration:', serviceDuration, 'minutos');
+    console.log('codigoReserva (ID del evento):', codigoReserva);
     
-    const eventTitle = `Cita: ${clientName} (${profesionalName || 'Especialista'})`;
+    const eventTitle = `Cita: ${clientName} (${codigoReserva})`;
     const eventDescription = `Cliente: ${clientName}
 Email: ${clientEmail}
 Teléfono: ${clientPhone}
@@ -1678,14 +1692,14 @@ Agendado por: Agente de WhatsApp`;
       endTime: endTime.toDate()       // Convertir moment a Date
     };
 
-    console.log('=== CREACIÓN DE EVENTO ===');
+    console.log('=== CREACIÓN DE EVENTO CON ID PERSONALIZADO ===');
     console.log('eventTitle:', eventTitle);
     
-    const createResult = await createEventOriginal(calendarId, eventData);
+    // Usar createEventWithCustomId para que el evento tenga el código como ID
+    const createResult = await createEventWithCustomId(calendarId, eventData, codigoReserva);
 
     if (!createResult.success) {
       if (createResult.error === 'CONFLICTO') {
-        // TODO: Implementar sugerencia de horarios alternativos
         return res.json({ 
           respuesta: `❌ ¡Demasiado tarde! El horario de las ${formatTimeTo12Hour(time)} ya fue reservado.` 
         });
@@ -1694,10 +1708,9 @@ Agendado por: Agente de WhatsApp`;
       }
     }
 
-    const codigoReserva = createResult.codigoReserva;
     console.log('✅ Evento creado exitosamente con código:', codigoReserva);
 
-    // PASO 5: GUARDAR DATOS DEL CLIENTE (lógica original)
+    // PASO 6: GUARDAR DATOS DEL CLIENTE (lógica original)
     console.log('🔥 INICIANDO GUARDADO DE DATOS DEL CLIENTE');
     
     const clientData = {
@@ -1718,7 +1731,7 @@ Agendado por: Agente de WhatsApp`;
       console.log('💥 FALLO: No se pudieron guardar los datos del cliente');
     }
 
-    // PASO 6: ENVÍO DE EMAILS (CONFIRMACIÓN AL CLIENTE + NOTIFICACIÓN AL NEGOCIO)
+    // PASO 7: ENVÍO DE EMAILS (CONFIRMACIÓN AL CLIENTE + NOTIFICACIÓN AL NEGOCIO)
     console.log('📧 === ENVÍO DE EMAILS ===');
     try {
       if (emailServiceReady) {
@@ -1762,7 +1775,7 @@ Agendado por: Agente de WhatsApp`;
       console.error('❌ Error enviando emails (no crítico):', emailError.message);
     }
 
-    // PASO 7: RESPUESTA FINAL (lógica original)
+    // PASO 8: RESPUESTA FINAL (lógica original)
     const time12h = formatTimeTo12Hour(time);
     console.log('=== RESPUESTA FINAL ===');
     console.log('time12h:', time12h);

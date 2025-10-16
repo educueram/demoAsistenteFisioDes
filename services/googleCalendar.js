@@ -830,6 +830,18 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
 }
 
 /**
+ * Generar código de reserva único (6 caracteres alfanuméricos)
+ */
+function generateUniqueReservationCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+/**
  * Formatear tiempo en formato HH:MM
  */
 function formatTime(date) {
@@ -899,6 +911,7 @@ module.exports = {
   findEventByClientName,
   formatTime,
   generateReservationCodeOriginal,
+  generateUniqueReservationCode,
   cancelEventByReservationCodeOriginal,
   createEventOriginal,
   createEventWithCustomId,
