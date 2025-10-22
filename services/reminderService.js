@@ -17,10 +17,11 @@ async function getUpcomingAppointments24h() {
     
     const sheets = await getSheetsInstance();
     const now = moment().tz(config.timezone.default);
-    const in24Hours = now.clone().add(24, 'hours');
+    const in23Hours = now.clone().add(23, 'hours');
+    const in25Hours = now.clone().add(25, 'hours');
     
     console.log(`⏰ Ahora: ${now.format('YYYY-MM-DD HH:mm')}`);
-    console.log(`⏰ En 24h: ${in24Hours.format('YYYY-MM-DD HH:mm')}`);
+    console.log(`⏰ Ventana de recordatorio: ${in23Hours.format('YYYY-MM-DD HH:mm')} a ${in25Hours.format('YYYY-MM-DD HH:mm')}`);
     
     // Obtener todos los datos de la hoja CLIENTES
     const response = await sheets.spreadsheets.values.get({
@@ -44,23 +45,35 @@ async function getUpcomingAppointments24h() {
       const fechaCita = row[6]; // FECHA_CITA
       const horaCita = row[7]; // HORA_CITA
       
-      // Solo citas confirmadas o reagendadas
-      if (!estado || (estado !== 'CONFIRMADA' && estado !== 'REAGENDADA')) {
+      console.log(`🔍 Revisando fila ${i}: ${row[2]} - Fecha: ${fechaCita} Hora: ${horaCita} Estado: ${estado}`);
+      
+      // Solo enviar recordatorio de 24h si el estado es AGENDADA o REAGENDADA
+      if (estado !== 'AGENDADA' && estado !== 'REAGENDADA') {
+        console.log(`   ⏭️ Saltando: estado "${estado}" no válido para recordatorio 24h (solo AGENDADA o REAGENDADA)`);
         continue;
       }
       
+      console.log(`   ✅ Estado válido para recordatorio: ${estado}`);
+      
       // Verificar que tenga fecha y hora
       if (!fechaCita || !horaCita) {
+        console.log(`   ⏭️ Saltando: falta fecha u hora`);
         continue;
       }
       
       // Crear momento de la cita
       const appointmentTime = moment.tz(`${fechaCita} ${horaCita}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
       
-      // Verificar si está en las próximas 24 horas
-      if (appointmentTime.isAfter(now) && appointmentTime.isBefore(in24Hours)) {
-        const hoursUntil = appointmentTime.diff(now, 'hours', true);
-        
+      if (!appointmentTime.isValid()) {
+        console.log(`   ⚠️ Fecha/hora inválida: ${fechaCita} ${horaCita}`);
+        continue;
+      }
+      
+      const hoursUntil = appointmentTime.diff(now, 'hours', true);
+      console.log(`   ⏱️ Horas hasta la cita: ${hoursUntil.toFixed(2)}`);
+      
+      // Verificar si está entre 23 y 25 horas en el futuro (ventana de 24h)
+      if (hoursUntil >= 23 && hoursUntil <= 25) {
         upcomingAppointments.push({
           codigoReserva: row[1],
           clientName: row[2],
@@ -75,11 +88,17 @@ async function getUpcomingAppointments24h() {
           hoursUntil: Math.round(hoursUntil)
         });
         
-        console.log(`✅ Cita encontrada: ${row[2]} - ${fechaCita} ${horaCita} (en ${Math.round(hoursUntil)}h)`);
+        console.log(`✅ ¡CITA ENCONTRADA! ${row[2]} - ${fechaCita} ${horaCita} (en ${hoursUntil.toFixed(1)} horas)`);
+      } else if (hoursUntil > 0 && hoursUntil < 23) {
+        console.log(`   ⏭️ Cita muy próxima (${hoursUntil.toFixed(1)}h) - recordatorio ya debió enviarse o se enviará el de 15min`);
+      } else if (hoursUntil > 25) {
+        console.log(`   ⏭️ Cita lejana (${hoursUntil.toFixed(1)}h) - aún no es tiempo de recordatorio de 24h`);
+      } else {
+        console.log(`   ⏭️ Cita en el pasado`);
       }
     }
 
-    console.log(`📊 Total citas próximas (24h): ${upcomingAppointments.length}`);
+    console.log(`\n📊 Total citas próximas (24h): ${upcomingAppointments.length}`);
     return upcomingAppointments;
 
   } catch (error) {
@@ -125,6 +144,12 @@ async function getUpcomingAppointments15min() {
       const horaCita = row[7]; // HORA_CITA
       
       console.log(`🔍 Revisando fila ${i}: ${row[2]} - Fecha: ${fechaCita} Hora: ${horaCita} Estado: ${estado}`);
+      
+      // Excluir citas canceladas explícitamente
+      if (estado === 'CANCELADA') {
+        console.log(`   ⏭️ Saltando: cita CANCELADA - no se envía recordatorio`);
+        continue;
+      }
       
       // Solo citas confirmadas o reagendadas
       if (!estado || (estado !== 'CONFIRMADA' && estado !== 'REAGENDADA')) {

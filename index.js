@@ -3738,87 +3738,99 @@ const getServerUrl = () => {
 
 /**
  * Cron Job: Verificar citas próximas en 24 horas
- * Se ejecuta cada hora
+ * Se ejecuta cada hora de lunes a domingo de 9 AM a 7 PM
+ * ⚠️ DESACTIVADO
  */
-cron.schedule('0 * * * *', async () => {
-  try {
-    console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (24H) ===');
-    console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
-    
-    const appointments = await getUpcomingAppointments24h();
-    
-    if (appointments.length === 0) {
-      console.log('✅ No hay citas próximas en las siguientes 24 horas');
-      return;
-    }
-    
-    console.log(`📊 Citas encontradas: ${appointments.length}`);
-    
-    // Enviar recordatorios por email y WhatsApp
-    for (const appointment of appointments) {
-      console.log(`\n📤 Enviando recordatorio a: ${appointment.clientName}`);
-      
-      // Enviar email
-      if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
-        await sendEmailReminder24h(appointment);
-      }
-      
-      // Enviar WhatsApp
-      if (appointment.clientPhone) {
-        await sendWhatsAppReminder24h(appointment);
-      }
-    }
-    
-    console.log('✅ Recordatorios de 24h enviados exitosamente');
-    
-  } catch (error) {
-    console.error('❌ Error en cron de 24h:', error.message);
-  }
-});
+// cron.schedule('0 9-19 * * *', async () => {
+//   try {
+//     console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (24H) ===');
+//     console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
+//     
+//     const appointments = await getUpcomingAppointments24h();
+//     
+//     if (appointments.length === 0) {
+//       console.log('✅ No hay citas próximas en las siguientes 24 horas');
+//       return;
+//     }
+//     
+//     console.log(`📊 Citas encontradas: ${appointments.length}`);
+//     
+//     // Enviar recordatorios por email y WhatsApp
+//     for (const appointment of appointments) {
+//       console.log(`\n📤 Enviando recordatorio a: ${appointment.clientName}`);
+//       console.log(`🎟️ Código de reserva: ${appointment.codigoReserva}`);
+//       
+//       // Enviar email
+//       if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
+//         await sendEmailReminder24h(appointment);
+//       }
+//       
+//       // Enviar WhatsApp
+//       if (appointment.clientPhone) {
+//         const whatsappResult = await sendWhatsAppReminder24h(appointment);
+//         
+//         // Si WhatsApp se envió exitosamente, actualizar estado a NOTIFICADA
+//         if (whatsappResult.success) {
+//           console.log(`✅ WhatsApp enviado exitosamente. Actualizando estado a NOTIFICADA...`);
+//           await updateClientStatus(appointment.codigoReserva, 'NOTIFICADA');
+//           console.log(`✅ Estado actualizado: ${appointment.codigoReserva} -> NOTIFICADA`);
+//         } else {
+//           console.log(`⚠️ Error enviando WhatsApp: ${whatsappResult.error}`);
+//         }
+//       }
+//     }
+//     
+//     console.log('✅ Recordatorios de 24h enviados exitosamente');
+//     
+//   } catch (error) {
+//     console.error('❌ Error en cron de 24h:', error.message);
+//   }
+// });
 
 /**
  * Cron Job: Verificar citas próximas en 15 minutos
  * Se ejecuta cada 45 minutos de lunes a sábado
+ * ⚠️ DESACTIVADO
  */
-cron.schedule('*/45 * * * 1-6', async () => {
-  try {
-    console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (15MIN) ===');
-    console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
-    
-    const appointments = await getUpcomingAppointments15min();
-    
-    if (appointments.length === 0) {
-      console.log('✅ No hay citas próximas en los siguientes 15 minutos');
-      return;
-    }
-    
-    console.log(`📊 Citas encontradas: ${appointments.length}`);
-    
-    // Enviar recordatorios por email y WhatsApp
-    for (const appointment of appointments) {
-      console.log(`\n📤 Enviando recordatorio urgente a: ${appointment.clientName}`);
-      
-      // Enviar email
-      if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
-        await sendEmailReminder15min(appointment);
-      }
-      
-      // Enviar WhatsApp
-      if (appointment.clientPhone) {
-        await sendWhatsAppReminder15min(appointment);
-      }
-    }
-    
-    console.log('✅ Recordatorios de 15min enviados exitosamente');
-    
-  } catch (error) {
-    console.error('❌ Error en cron de 15min:', error.message);
-  }
-});
+// cron.schedule('*/45 * * * 1-6', async () => {
+//   try {
+//     console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (15MIN) ===');
+//     console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
+//     
+//     const appointments = await getUpcomingAppointments15min();
+//     
+//     if (appointments.length === 0) {
+//       console.log('✅ No hay citas próximas en los siguientes 15 minutos');
+//       return;
+//     }
+//     
+//     console.log(`📊 Citas encontradas: ${appointments.length}`);
+//     
+//     // Enviar recordatorios por email y WhatsApp
+//     for (const appointment of appointments) {
+//       console.log(`\n📤 Enviando recordatorio urgente a: ${appointment.clientName}`);
+//       
+//       // Enviar email
+//       if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
+//         await sendEmailReminder15min(appointment);
+//       }
+//       
+//       // Enviar WhatsApp
+//       if (appointment.clientPhone) {
+//         await sendWhatsAppReminder15min(appointment);
+//       }
+//     }
+//     
+//     console.log('✅ Recordatorios de 15min enviados exitosamente');
+//     
+//   } catch (error) {
+//     console.error('❌ Error en cron de 15min:', error.message);
+//   }
+// });
 
-console.log('✅ Cron jobs de recordatorios inicializados');
-console.log('   - Recordatorio 24h: Cada hora, Todos los días (0 * * * *)');
-console.log('   - Recordatorio 15min: Cada 15 minutos, Lunes a Sábado (*/15 * * * 1-6)');
+console.log('⚠️ Cron jobs de recordatorios DESACTIVADOS');
+console.log('   - Recordatorio 24h: DESACTIVADO');
+console.log('   - Recordatorio 15min: DESACTIVADO');
 
 app.listen(PORT, () => {
   const serverUrl = getServerUrl();
