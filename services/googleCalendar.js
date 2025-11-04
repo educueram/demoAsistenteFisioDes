@@ -1,6 +1,7 @@
 const { getCalendarInstance } = require('./googleAuth');
 const config = require('../config');
 const moment = require('moment-timezone');
+const crypto = require('crypto');
 
 /**
  * Servicio para manejo de Google Calendar
@@ -736,41 +737,27 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     }
     console.log('✅ Instancia de calendario obtenida correctamente');
 
-    // Generar ID válido para Google Calendar
-    // Google Calendar es MUY estricto con IDs personalizados (requisitos no documentados)
-    // Estrategia robusta: usar hexadecimal largo (mínimo 16 caracteres)
-    let baseId = customEventId.toLowerCase().replace(/[^a-z0-9]/g, '');
+    // Generar ID válido para Google Calendar usando UUID v4
+    // PROBLEMA IDENTIFICADO: Cuando se elimina un evento manualmente del calendario,
+    // Google puede mantener un caché del ID, causando errores al reutilizar el mismo horario.
+    // SOLUCIÓN: Usar UUID completamente único para cada evento, independiente del código de reserva.
     
-    // Si el baseId empieza con número, agregar prefijo
-    if (/^\d/.test(baseId)) {
-      baseId = 'evt' + baseId;
-      console.log(`⚠️ ID empezaba con número, agregando prefijo: ${baseId}`);
-    }
+    // Generar UUID v4 y convertir a formato aceptado por Google Calendar
+    // (solo letras minúsculas y números, sin guiones)
+    const uuid = crypto.randomUUID().replace(/-/g, '').toLowerCase();
     
-    // Generar un sufijo hexadecimal largo y único (timestamp + random)
-    const timestamp = Date.now().toString(16); // timestamp en hex
-    const random = Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0'); // 6 dígitos hex random
-    const suffix = timestamp + random;
+    // Opcionalmente prefijo con el código de reserva para facilitar búsqueda manual
+    let eventId = customEventId.toLowerCase().replace(/[^a-z0-9]/g, '') + uuid.slice(0, 16);
     
-    // Construir ID final: base + sufijo (mínimo 16-20 caracteres)
-    let eventId = baseId + suffix;
-    
-    // Padding adicional si es necesario para llegar a 20 caracteres (longitud segura)
-    if (eventId.length < 20) {
-      const padding = '0'.repeat(20 - eventId.length);
-      eventId = eventId + padding;
-    }
-    
-    // Asegurar que empiece con letra (doble verificación)
+    // Asegurar que empiece con letra
     if (/^\d/.test(eventId)) {
-      eventId = 'e' + eventId;
+      eventId = 'evt' + eventId;
     }
     
-    console.log(`🔑 Base ID: ${baseId} (longitud: ${baseId.length})`);
-    console.log(`🔑 Timestamp hex: ${timestamp}`);
-    console.log(`🔑 Random hex: ${random}`);
+    console.log(`🔑 Código de reserva: ${customEventId}`);
+    console.log(`🔑 UUID generado: ${uuid}`);
     console.log(`🔑 ID del evento final: ${eventId} (longitud: ${eventId.length})`);
-    console.log(`🔑 Empieza con letra: ${/^[a-z]/.test(eventId) ? '✅' : '❌'}`);
+    console.log(`🔑 Formato válido: ${/^[a-z][a-z0-9]{4,}$/.test(eventId) ? '✅' : '❌'}`);
 
     // PASO 1: Verificar si el evento ya existe (buscar por ID exacto)
     let existingEvent = null;
