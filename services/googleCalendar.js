@@ -721,8 +721,15 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     console.log(`📅 Calendar: ${calendarId}`);
     console.log(`🎟️ Custom Event ID: ${customEventId}`);
     console.log(`📊 Datos:`, eventData);
+    console.log(`📊 startTime type:`, typeof eventData.startTime, eventData.startTime);
+    console.log(`📊 endTime type:`, typeof eventData.endTime, eventData.endTime);
 
     const calendar = await getCalendarInstance();
+    
+    if (!calendar) {
+      throw new Error('No se pudo obtener la instancia del calendario');
+    }
+    console.log('✅ Instancia de calendario obtenida correctamente');
 
     // Generar ID válido para Google Calendar
     // Google Calendar requiere: 5-1024 caracteres, solo minúsculas, números, guiones y guiones bajos
@@ -753,12 +760,18 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     }
 
     // PASO 2: Verificar conflictos (excluyendo el evento actual si existe)
+    console.log('📋 Verificando conflictos de horario...');
+    console.log(`   - timeMin: ${eventData.startTime.toISOString()}`);
+    console.log(`   - timeMax: ${eventData.endTime.toISOString()}`);
+    
     const conflictingEventsResponse = await calendar.events.list({
       calendarId: calendarId,
       timeMin: eventData.startTime.toISOString(),
       timeMax: eventData.endTime.toISOString(),
       singleEvents: true
     });
+    
+    console.log('✅ Consulta de conflictos completada');
 
     const allEvents = conflictingEventsResponse.data.items || [];
     // Filtrar el evento actual (si existe) de los conflictos
@@ -818,8 +831,10 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
       event.id = eventId;
       console.log(`📝 Creando nuevo evento: "${event.summary}"`);
       console.log(`📋 Con ID personalizado: ${eventId}`);
+      console.log(`📋 Evento a insertar:`, JSON.stringify(event, null, 2));
       
       try {
+        console.log('🔄 Ejecutando calendar.events.insert...');
         response = await calendar.events.insert({
           calendarId: calendarId,
           resource: event
@@ -830,6 +845,8 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
         console.error(`📋 EventId intentado: ${eventId}`);
         console.error(`📋 Longitud del ID: ${eventId.length}`);
         console.error(`📋 Caracteres válidos: ${/^[a-z0-9]+$/.test(eventId)}`);
+        console.error(`📋 Error completo:`, JSON.stringify(insertError, null, 2));
+        console.error(`📋 Error response:`, insertError.response?.data);
         throw insertError;
       }
     }
