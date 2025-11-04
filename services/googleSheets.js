@@ -130,7 +130,7 @@ async function saveClientDataOriginal(clientData) {
       clientData.date || '',               // FECHA_CITA
       clientData.time || '',               // HORA_CITA
       clientData.serviceName || '',        // SERVICIO
-      'CONFIRMADA'                         // ESTADO
+      'AGENDADA'                         // ESTADO
     ];
 
     console.log('📝 Fila a insertar:', rowData);
