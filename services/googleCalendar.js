@@ -772,7 +772,7 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     console.log(`🔑 ID del evento final: ${eventId} (longitud: ${eventId.length})`);
     console.log(`🔑 Empieza con letra: ${/^[a-z]/.test(eventId) ? '✅' : '❌'}`);
 
-    // PASO 1: Verificar si el evento ya existe
+    // PASO 1: Verificar si el evento ya existe (buscar por ID exacto)
     let existingEvent = null;
     try {
       const getResponse = await calendar.events.get({
@@ -781,11 +781,44 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
       });
       existingEvent = getResponse.data;
       console.log(`✅ Evento existente encontrado: ${existingEvent.id}`);
+      console.log(`⚠️ Nota: Este evento será actualizado, no creado desde cero`);
     } catch (error) {
       if (error.code === 404) {
         console.log(`📋 Evento no existe, se creará uno nuevo`);
       } else {
         console.log(`⚠️ Error verificando evento existente: ${error.message}`);
+      }
+    }
+    
+    // PASO 1.5: Verificar si ya existe un evento con el mismo código base (eventos "fantasma")
+    // Esto previene problemas cuando se elimina manualmente del calendario
+    if (!existingEvent) {
+      console.log(`🔍 Verificando eventos fantasma con código base: ${customEventId}`);
+      try {
+        const phantomCheckResponse = await calendar.events.list({
+          calendarId: calendarId,
+          timeMin: eventData.startTime.toISOString(),
+          timeMax: eventData.endTime.toISOString(),
+          singleEvents: true
+        });
+        
+        const phantomEvents = (phantomCheckResponse.data.items || []).filter(evt => {
+          const evtIdUpper = evt.id.toUpperCase();
+          const codeUpper = customEventId.toUpperCase();
+          return evtIdUpper.startsWith(codeUpper) || evtIdUpper.startsWith('EVT' + codeUpper);
+        });
+        
+        if (phantomEvents.length > 0) {
+          console.log(`⚠️ Se encontraron ${phantomEvents.length} eventos con el mismo código base`);
+          phantomEvents.forEach(evt => {
+            console.log(`   - Evento fantasma: "${evt.summary}" (ID: ${evt.id})`);
+          });
+          console.log(`⚠️ Estos eventos deberían haber sido eliminados pero siguen en el calendario`);
+        } else {
+          console.log(`✅ No hay eventos fantasma con el código base`);
+        }
+      } catch (phantomError) {
+        console.log(`⚠️ Error verificando eventos fantasma: ${phantomError.message}`);
       }
     }
 
