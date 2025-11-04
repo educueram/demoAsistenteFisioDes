@@ -526,22 +526,20 @@ async function cancelEventByReservationCodeOriginal(calendarId, codigoReserva) {
     const allEvents = response.data.items || [];
     console.log(`📋 Total eventos encontrados: ${allEvents.length}`);
     
-    // LÓGICA ORIGINAL: Buscar evento por ID que comience con el código
-    console.log(`\n🔍 === ANÁLISIS DE EVENTOS POR ID ===`);
+    // NUEVA LÓGICA: Buscar evento por TÍTULO (contiene código de reserva)
+    // Ya que ahora usamos UUID puro, no podemos buscar por prefijo del ID
+    console.log(`\n🔍 === ANÁLISIS DE EVENTOS POR TÍTULO ===`);
     const targetEvent = allEvents.find(event => {
-      const fullEventId = event.id;
-      const eventId = fullEventId.split('@')[0].toUpperCase();
+      const eventTitle = event.summary || '';
       const codigoUpper = codigoReserva.toUpperCase();
       
-      // Verificar coincidencia directa o con prefijo "EVT" (para códigos que empiezan con número)
-      const matchesDirect = eventId.startsWith(codigoUpper);
-      const matchesWithPrefix = eventId.startsWith('EVT' + codigoUpper);
-      const matches = matchesDirect || matchesWithPrefix;
+      // Buscar el código en el título del evento
+      // Formato esperado: "Cita: Nombre Cliente (CODIGO)"
+      const matches = eventTitle.includes(`(${codigoUpper})`);
       
-      console.log(`📄 Evento: "${event.summary}"`);
-      console.log(`   🆔 ID completo: ${fullEventId}`);
-      console.log(`   🔢 ID corto: ${eventId}`);
-      console.log(`   🎯 Coincide con ${codigoReserva}: ${matches ? '✅' : '❌'}${matchesWithPrefix ? ' (con prefijo)' : ''}`);
+      console.log(`📄 Evento: "${eventTitle}"`);
+      console.log(`   🆔 ID: ${event.id}`);
+      console.log(`   🎯 Contiene código ${codigoUpper}: ${matches ? '✅' : '❌'}`);
       
       return matches;
     });
@@ -737,27 +735,22 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     }
     console.log('✅ Instancia de calendario obtenida correctamente');
 
-    // Generar ID válido para Google Calendar usando UUID v4
-    // PROBLEMA IDENTIFICADO: Cuando se elimina un evento manualmente del calendario,
-    // Google puede mantener un caché del ID, causando errores al reutilizar el mismo horario.
-    // SOLUCIÓN: Usar UUID completamente único para cada evento, independiente del código de reserva.
+    // Generar ID válido para Google Calendar usando SOLO UUID v4
+    // PROBLEMA: Google Calendar rechaza ciertos patrones de ID mixtos (código + UUID)
+    // SOLUCIÓN DEFINITIVA: Usar SOLO UUID sin modificaciones (formato más confiable)
     
     // Generar UUID v4 y convertir a formato aceptado por Google Calendar
     // (solo letras minúsculas y números, sin guiones)
     const uuid = crypto.randomUUID().replace(/-/g, '').toLowerCase();
     
-    // Opcionalmente prefijo con el código de reserva para facilitar búsqueda manual
-    let eventId = customEventId.toLowerCase().replace(/[^a-z0-9]/g, '') + uuid.slice(0, 16);
+    // Usar SOLO el UUID como ID (32 caracteres hexadecimales)
+    // Este formato es universalmente aceptado por Google Calendar
+    let eventId = uuid;
     
-    // Asegurar que empiece con letra
-    if (/^\d/.test(eventId)) {
-      eventId = 'evt' + eventId;
-    }
-    
-    console.log(`🔑 Código de reserva: ${customEventId}`);
-    console.log(`🔑 UUID generado: ${uuid}`);
+    console.log(`🔑 Código de reserva (usuario): ${customEventId}`);
+    console.log(`🔑 UUID generado (ID interno): ${uuid}`);
     console.log(`🔑 ID del evento final: ${eventId} (longitud: ${eventId.length})`);
-    console.log(`🔑 Formato válido: ${/^[a-z][a-z0-9]{4,}$/.test(eventId) ? '✅' : '❌'}`);
+    console.log(`🔑 Formato UUID puro: ✅`);
 
     // PASO 1: Verificar si el evento ya existe (buscar por ID exacto)
     let existingEvent = null;
@@ -777,35 +770,35 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
       }
     }
     
-    // PASO 1.5: Verificar si ya existe un evento con el mismo código base (eventos "fantasma")
-    // Esto previene problemas cuando se elimina manualmente del calendario
+    // PASO 1.5: Verificar si ya existe un evento con el mismo código en el título
+    // (para detectar eventos duplicados cuando se usa UUID puro)
     if (!existingEvent) {
-      console.log(`🔍 Verificando eventos fantasma con código base: ${customEventId}`);
+      console.log(`🔍 Verificando eventos duplicados con código: ${customEventId}`);
       try {
-        const phantomCheckResponse = await calendar.events.list({
+        const duplicateCheckResponse = await calendar.events.list({
           calendarId: calendarId,
           timeMin: eventData.startTime.toISOString(),
           timeMax: eventData.endTime.toISOString(),
           singleEvents: true
         });
         
-        const phantomEvents = (phantomCheckResponse.data.items || []).filter(evt => {
-          const evtIdUpper = evt.id.toUpperCase();
-          const codeUpper = customEventId.toUpperCase();
-          return evtIdUpper.startsWith(codeUpper) || evtIdUpper.startsWith('EVT' + codeUpper);
+        const codeUpper = customEventId.toUpperCase();
+        const duplicateEvents = (duplicateCheckResponse.data.items || []).filter(evt => {
+          const eventTitle = evt.summary || '';
+          return eventTitle.includes(`(${codeUpper})`);
         });
         
-        if (phantomEvents.length > 0) {
-          console.log(`⚠️ Se encontraron ${phantomEvents.length} eventos con el mismo código base`);
-          phantomEvents.forEach(evt => {
-            console.log(`   - Evento fantasma: "${evt.summary}" (ID: ${evt.id})`);
+        if (duplicateEvents.length > 0) {
+          console.log(`⚠️ Se encontraron ${duplicateEvents.length} eventos con el mismo código de reserva`);
+          duplicateEvents.forEach(evt => {
+            console.log(`   - Evento duplicado: "${evt.summary}" (ID: ${evt.id})`);
           });
-          console.log(`⚠️ Estos eventos deberían haber sido eliminados pero siguen en el calendario`);
+          console.log(`⚠️ Posible duplicación - revisar`);
         } else {
-          console.log(`✅ No hay eventos fantasma con el código base`);
+          console.log(`✅ No hay eventos duplicados con el código ${customEventId}`);
         }
-      } catch (phantomError) {
-        console.log(`⚠️ Error verificando eventos fantasma: ${phantomError.message}`);
+      } catch (duplicateError) {
+        console.log(`⚠️ Error verificando duplicados: ${duplicateError.message}`);
       }
     }
 
