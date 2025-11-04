@@ -530,12 +530,17 @@ async function cancelEventByReservationCodeOriginal(calendarId, codigoReserva) {
     const targetEvent = allEvents.find(event => {
       const fullEventId = event.id;
       const eventId = fullEventId.split('@')[0].toUpperCase();
-      const matches = eventId.startsWith(codigoReserva.toUpperCase());
+      const codigoUpper = codigoReserva.toUpperCase();
+      
+      // Verificar coincidencia directa o con prefijo "EVT" (para códigos que empiezan con número)
+      const matchesDirect = eventId.startsWith(codigoUpper);
+      const matchesWithPrefix = eventId.startsWith('EVT' + codigoUpper);
+      const matches = matchesDirect || matchesWithPrefix;
       
       console.log(`📄 Evento: "${event.summary}"`);
       console.log(`   🆔 ID completo: ${fullEventId}`);
       console.log(`   🔢 ID corto: ${eventId}`);
-      console.log(`   🎯 Coincide con ${codigoReserva}: ${matches ? '✅' : '❌'}`);
+      console.log(`   🎯 Coincide con ${codigoReserva}: ${matches ? '✅' : '❌'}${matchesWithPrefix ? ' (con prefijo)' : ''}`);
       
       return matches;
     });
@@ -733,17 +738,28 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
 
     // Generar ID válido para Google Calendar
     // Google Calendar requiere: 5-1024 caracteres, solo minúsculas, números, guiones y guiones bajos
-    // NOTA: En la práctica, IDs cortos (< 10 caracteres) pueden dar error "Invalid resource id value"
+    // REQUISITO IMPORTANTE: Debe empezar con letra (no número)
     let baseId = customEventId.toLowerCase().replace(/[^a-z0-9]/g, '');
     
-    // Agregar timestamp corto para asegurar longitud mínima de ~10 caracteres
-    // y evitar el error "Invalid resource id value" de Google
-    const timestamp = Date.now().toString(36).slice(-6); // últimos 6 chars del timestamp en base36
+    // Si el baseId empieza con número, agregar prefijo
+    if (/^\d/.test(baseId)) {
+      baseId = 'evt' + baseId;
+      console.log(`⚠️ ID empezaba con número, agregando prefijo: ${baseId}`);
+    }
+    
+    // Agregar timestamp para asegurar longitud y unicidad
+    const timestamp = Date.now().toString(36).slice(-8); // últimos 8 chars del timestamp en base36
     let eventId = baseId + timestamp;
+    
+    // Asegurar que empiece con letra
+    if (/^\d/.test(eventId)) {
+      eventId = 'e' + eventId;
+    }
     
     console.log(`🔑 Base ID: ${baseId} (longitud: ${baseId.length})`);
     console.log(`🔑 Timestamp: ${timestamp}`);
-    console.log(`🔑 ID del evento final (normalizado): ${eventId} (longitud: ${eventId.length})`);
+    console.log(`🔑 ID del evento final: ${eventId} (longitud: ${eventId.length})`);
+    console.log(`🔑 Empieza con letra: ${/^[a-z]/.test(eventId) ? '✅' : '❌'}`);
 
     // PASO 1: Verificar si el evento ya existe
     let existingEvent = null;
