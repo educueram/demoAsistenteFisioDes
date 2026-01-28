@@ -14,76 +14,104 @@ const crypto = require('crypto');
  */
 async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
   try {
-    console.log(`📅 Buscando slots disponibles para ${calendarId} el ${date.toISOString().split('T')[0]}`);
-    console.log(`🌍 Zona horaria configurada: ${config.timezone.default}`);
-    console.log(`🔧 Modo forzado: ${config.workingHours.forceFixedSchedule}`);
+    console.log(`📅 Buscando slots para ${calendarId} el ${date.toISOString().split('T')[0]}`);
     
     const calendar = await getCalendarInstance();
+    const dateMoment = moment.tz(date.toISOString().split('T')[0], 'YYYY-MM-DD', config.timezone.default);
+    const dayOfWeek = dateMoment.day();
     
-    // Crear momento para obtener el día de la semana
-    const dateMoment = moment(date).tz(config.timezone.default);
-    const dayOfWeek = dateMoment.day(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
-    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-    
-    console.log(`📅 Día de la semana: ${dayNames[dayOfWeek]} (${dayOfWeek})`);
-    
-    // VALIDACIÓN: DOMINGO - No se trabaja
-    if (dayOfWeek === 0) { // Domingo
-      console.log(`🚫 DOMINGO - No hay servicio los domingos`);
-      return {
-        slots: [],
-        message: '🚫 No hay servicio los domingos. Por favor, selecciona otro día de la semana.',
-        dayType: 'sunday-closed'
-      };
+    // Validación: Domingo cerrado
+    if (dayOfWeek === 0) {
+      return [];
     }
     
-    // VALIDACIÓN: SÁBADO - Horario especial (10 AM - 1 PM)
+    // Definir horario según día
+    let workingHours;
     if (dayOfWeek === 6) { // Sábado
-      console.log(`📅 SÁBADO - Horario especial: 10:00 AM - 1:00 PM`);
-      const saturdayHours = {
-        start: config.workingHours.saturday.startHour,
-        end: config.workingHours.saturday.endHour
-      };
-      
-      console.log(`⚙️ Horarios de sábado:`);
-      console.log(`   - Inicio: ${saturdayHours.start}:00`);
-      console.log(`   - Fin: ${saturdayHours.end}:00`);
-      
-      const slots = await generateSlotsForDay(calendar, calendarId, dateMoment, saturdayHours, durationMinutes);
-      
-      // Simplemente retornar los slots sin mensajes especiales
-      return {
-        slots: slots,
-        message: null,
-        dayType: slots.length === 0 ? 'saturday-full' : 'saturday-special'
-      };
+      workingHours = { start: 10, end: 13 }; // 10 AM - 1 PM
+    } else { // Lunes a viernes
+      workingHours = { start: 10, end: 19 }; // 10 AM - 7 PM
     }
     
-    // HORARIOS NORMALES (Lunes a Viernes)
-    const workingHours = config.workingHours.forceFixedSchedule ? {
-      start: config.workingHours.startHour,
-      end: config.workingHours.endHour
-    } : {
-      start: hours?.start || 10,
-      end: hours?.end || 19
-    };
+    console.log(`📅 Horario: ${workingHours.start}:00 - ${workingHours.end}:00`);
     
-    console.log(`⚙️ Horarios de trabajo (${dayNames[dayOfWeek]}):`);
-    console.log(`   - Inicio: ${workingHours.start}:00`);
-    console.log(`   - Fin: ${workingHours.end}:00`);
-    console.log(`   - Comida: Flexible según eventos del calendario`);
+    // Obtener eventos del calendario
+    const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
+    const endOfDay = dateMoment.clone().hour(workingHours.end + 1).minute(0).second(0);
     
-    // Para días normales, usar la lógica existente
-    const slots = await generateSlotsForDay(calendar, calendarId, dateMoment, workingHours, durationMinutes);
+    const response = await calendar.events.list({
+      calendarId: calendarId,
+      timeMin: startOfDay.toISOString(),
+      timeMax: endOfDay.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime'
+    });
     
-    return {
-      slots: slots,
-      message: null,
-      dayType: 'weekday-normal'
-    };
+    const events = response.data.items || [];
+    console.log(`📋 Eventos encontrados: ${events.length}`);
+    
+    // Convertir eventos a formato simple de horas ocupadas
+    const occupiedHours = new Set();
+    const targetDateStr = dateMoment.format('YYYY-MM-DD');
+    
+    events.forEach(event => {
+      try {
+        const eventStart = moment.tz(event.start.dateTime || event.start.date, config.timezone.default);
+        const eventEnd = moment.tz(event.end.dateTime || event.end.date, config.timezone.default);
+        
+        // Solo considerar eventos del mismo día
+        if (eventStart.format('YYYY-MM-DD') !== targetDateStr) return;
+        
+        // Marcar cada hora que el evento ocupa
+        let currentHour = eventStart.hour();
+        const endHour = eventEnd.hour();
+        
+        while (currentHour < endHour && currentHour <= workingHours.end) {
+          if (currentHour >= workingHours.start) {
+            occupiedHours.add(currentHour);
+            console.log(`🚫 Hora ocupada: ${currentHour}:00 (${event.summary || 'Sin título'})`);
+          }
+          currentHour++;
+        }
+        
+      } catch (error) {
+        console.warn(`⚠️ Error procesando evento: ${error.message}`);
+      }
+    });
+    
+    // Generar slots disponibles
+    const availableSlots = [];
+    const now = moment().tz(config.timezone.default);
+    const isToday = dateMoment.isSame(now, 'day');
+    
+    for (let hour = workingHours.start; hour <= workingHours.end; hour++) {
+      // Verificar si está ocupado
+      if (occupiedHours.has(hour)) {
+        console.log(`❌ Slot ${hour}:00 ocupado`);
+        continue;
+      }
+      
+      // Verificar tiempo mínimo de anticipación (solo para hoy)
+      if (isToday) {
+        const slotTime = dateMoment.clone().hour(hour).minute(0);
+        const minimumTime = now.clone().add(1, 'hour');
+        if (slotTime.isBefore(minimumTime)) {
+          console.log(`❌ Slot ${hour}:00 demasiado pronto (mínimo 1 hora)`);
+          continue;
+        }
+      }
+      
+      // Si pasa todas las validaciones, está disponible
+      availableSlots.push(`${hour.toString().padStart(2, '0')}:00`);
+      console.log(`✅ Slot ${hour}:00 disponible`);
+    }
+    
+    console.log(`📊 Total slots disponibles: ${availableSlots.length}`);
+    return availableSlots;
+    
   } catch (error) {
-    console.error('❌ Error buscando slots disponibles:', error.message);
-    throw error;
+    console.error('❌ Error en findAvailableSlots:', error.message);
+    return [];
   }
 }
 
@@ -93,11 +121,20 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
 async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHours, durationMinutes) {
   try {
     const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
-    const endOfDay = dateMoment.clone().hour(workingHours.end).minute(0).second(0);
+    // CORRECCIÓN: El timeMax debe incluir el final del último slot
+    // Para sábados (10 AM - 1 PM), el último slot es 1 PM - 2 PM, así que timeMax debe ser 14:00 (2 PM)
+    // Para días normales (9 AM - 7 PM), el último slot es 7 PM - 8 PM, así que timeMax debe ser 20:00 (8 PM)
+    const endOfDay = dateMoment.clone().hour(workingHours.end + 1).minute(0).second(0);
+    
+    console.log(`📅 === CONFIGURACIÓN DE SLOTS ===`);
+    console.log(`   - Horario laboral: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    console.log(`   - Última sesión: ${workingHours.end}:00 - ${workingHours.end + 1}:00`);
+    console.log(`   - Rango de consulta al calendario: ${startOfDay.format('HH:mm')} a ${endOfDay.format('HH:mm')}`);
     
     console.log(`📅 Fechas calculadas en ${config.timezone.default}:`);
     console.log(`   - Inicio del día: ${startOfDay.format('YYYY-MM-DD HH:mm:ss z')}`);
-    console.log(`   - Fin del día: ${endOfDay.format('YYYY-MM-DD HH:mm:ss z')}`);
+    console.log(`   - Fin del día: ${endOfDay.format('YYYY-MM-DD HH:mm:ss z')} (incluye último slot hasta ${workingHours.end + 1}:00)`);
+    console.log(`   - Horario de trabajo: ${workingHours.start}:00 - ${workingHours.end}:00`);
     console.log(`   - Horario de comida: Flexible según eventos del calendario`);
     
     const now = moment().tz(config.timezone.default);
@@ -110,7 +147,8 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
     console.log(`   - Hora actual: ${now.format('HH:mm')}`);
     console.log(`   - Mínimo para agendar: ${minimumBookingTime.format('HH:mm')}`);
 
-    // Obtener eventos existentes en el calendario
+    // CORRECCIÓN: Obtener eventos existentes en el calendario
+    // timeMax debe ser hasta el final del último slot posible (8 PM)
     const response = await calendar.events.list({
       calendarId: calendarId,
       timeMin: startOfDay.toISOString(),
@@ -120,100 +158,821 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
     });
 
     const events = response.data.items || [];
-    console.log(`   - Eventos encontrados: ${events.length}`);
+    console.log(`   - Eventos encontrados en calendario: ${events.length}`);
+    console.log(`   - Rango consultado: ${startOfDay.format('YYYY-MM-DD HH:mm')} a ${endOfDay.format('YYYY-MM-DD HH:mm')}`);
 
     // 🔍 LOGGING DETALLADO: Mostrar todos los eventos encontrados
-    events.forEach((event, index) => {
-      const eventStart = moment(event.start.dateTime || event.start.date).tz(config.timezone.default);
-      const eventEnd = moment(event.end.dateTime || event.end.date).tz(config.timezone.default);
-      console.log(`   📅 Evento ${index + 1}: "${event.summary}"`);
-      console.log(`      - Inicio: ${eventStart.format('YYYY-MM-DD HH:mm:ss z')}`);
-      console.log(`      - Fin: ${eventEnd.format('YYYY-MM-DD HH:mm:ss z')}`);
-    });
+    if (events.length === 0) {
+      console.log(`   ✅ No hay eventos ocupados en este día - todos los slots deberían estar disponibles`);
+    } else {
+      console.log(`   📋 === EVENTOS ENCONTRADOS EN EL CALENDARIO ===`);
+      events.forEach((event, index) => {
+        const eventStartRaw = moment(event.start.dateTime || event.start.date).tz(config.timezone.default);
+        const eventEndRaw = moment(event.end.dateTime || event.end.date).tz(config.timezone.default);
+        console.log(`   📅 Evento ${index + 1}: "${event.summary || 'Sin título'}"`);
+        console.log(`      - Inicio RAW: ${eventStartRaw.format('YYYY-MM-DD HH:mm:ss.SSS z')}`);
+        console.log(`      - Fin RAW: ${eventEndRaw.format('YYYY-MM-DD HH:mm:ss.SSS z')}`);
+        console.log(`      - Hora inicio: ${eventStartRaw.format('HH:mm')}`);
+        console.log(`      - Hora fin: ${eventEndRaw.format('HH:mm')}`);
+        console.log(`      - Duración: ${eventEndRaw.diff(eventStartRaw, 'minutes')} minutos`);
+      });
+    }
 
     // Crear lista de slots ocupados solo con eventos del calendario
-    const busySlots = events.map(event => ({
-      start: moment(event.start.dateTime || event.start.date).tz(config.timezone.default),
-      end: moment(event.end.dateTime || event.end.date).tz(config.timezone.default),
-      type: `appointment: ${event.summary || 'Sin título'}`
-    }));
+    // CORRECCIÓN CRÍTICA: Parsear y normalizar eventos de forma consistente para TODOS los días
+    const targetDateStr = dateMoment.format('YYYY-MM-DD');
+    const busySlots = events.map(event => {
+      let eventStart, eventEnd;
+      
+      try {
+        // Parsear fecha de inicio
+        if (event.start.dateTime) {
+          // CORRECCIÓN CRÍTICA: Parsear con zona horaria explícita y formato ISO
+          eventStart = moment.tz(event.start.dateTime, config.timezone.default);
+          if (!eventStart.isValid()) {
+            console.warn(`⚠️ Evento "${event.summary}" tiene fecha de inicio inválida: ${event.start.dateTime}`);
+            return null;
+          }
+        } else if (event.start.date) {
+          // Evento de día completo - convertir a inicio del día
+          eventStart = moment.tz(event.start.date, 'YYYY-MM-DD', config.timezone.default).startOf('day');
+          if (!eventStart.isValid()) {
+            console.warn(`⚠️ Evento "${event.summary}" tiene fecha de inicio inválida: ${event.start.date}`);
+            return null;
+          }
+        } else {
+          console.warn(`⚠️ Evento sin fecha de inicio válida: ${event.summary}`);
+          return null;
+        }
+        
+        // Parsear fecha de fin
+        if (event.end.dateTime) {
+          // CORRECCIÓN CRÍTICA: Parsear con zona horaria explícita y formato ISO
+          eventEnd = moment.tz(event.end.dateTime, config.timezone.default);
+          if (!eventEnd.isValid()) {
+            console.warn(`⚠️ Evento "${event.summary}" tiene fecha de fin inválida: ${event.end.dateTime}`);
+            return null;
+          }
+        } else if (event.end.date) {
+          // Evento de día completo - convertir a fin del día
+          eventEnd = moment.tz(event.end.date, 'YYYY-MM-DD', config.timezone.default).endOf('day');
+          if (!eventEnd.isValid()) {
+            console.warn(`⚠️ Evento "${event.summary}" tiene fecha de fin inválida: ${event.end.date}`);
+            return null;
+          }
+        } else {
+          console.warn(`⚠️ Evento sin fecha de fin válida: ${event.summary}`);
+          return null;
+        }
+        
+        // CORRECCIÓN CRÍTICA: Normalizar a minutos exactos (sin segundos/milisegundos) para comparaciones precisas
+        // IMPORTANTE: Normalizar AMBOS inicio y fin a minutos exactos para comparaciones precisas
+        eventStart = eventStart.clone().second(0).millisecond(0);
+        eventEnd = eventEnd.clone().second(0).millisecond(0);
+        
+        // CORRECCIÓN CRÍTICA: Filtrar eventos que NO están en el día objetivo
+        // Esto es crucial para evitar que eventos de otros días afecten los slots
+        const eventDate = eventStart.format('YYYY-MM-DD');
+        if (eventDate !== targetDateStr) {
+          // Silenciosamente ignorar eventos de otros días
+          return null;
+        }
+      } catch (parseError) {
+        console.error(`❌ Error parseando evento "${event.summary}":`, parseError.message);
+        return null;
+      }
+      
+      // CORRECCIÓN CRÍTICA: Logging detallado para verificar el parseo
+      const eventHour = eventStart.hour();
+      const eventMinute = eventStart.minute();
+      const eventEndHour = eventEnd.hour();
+      const eventEndMinute = eventEnd.minute();
+      const eventDateFormatted = eventStart.format('YYYY-MM-DD');
+      
+      console.log(`      🔍 Evento parseado: "${event.summary || 'Sin título'}"`);
+      console.log(`         - Fecha: ${eventDateFormatted}`);
+      console.log(`         - Inicio normalizado: ${eventStart.format('YYYY-MM-DD HH:mm:ss z')} (hora ${eventHour}:${eventMinute.toString().padStart(2, '0')})`);
+      console.log(`         - Fin normalizado: ${eventEnd.format('YYYY-MM-DD HH:mm:ss z')} (hora ${eventEndHour}:${eventEndMinute.toString().padStart(2, '0')})`);
+      console.log(`         - Este evento DEBERÍA bloquear slots de ${eventHour}:00 a ${eventEndHour}:00`);
+      
+      return {
+        start: eventStart,
+        end: eventEnd,
+        type: `appointment: ${event.summary || 'Sin título'}`,
+        originalSummary: event.summary || 'Sin título'
+      };
+    }).filter(slot => slot !== null); // Filtrar eventos inválidos y eventos de otros días
 
+    // CORRECCIÓN CRÍTICA: Los eventos ya fueron filtrados por fecha en el map (línea 240)
+    // Solo necesitamos ordenarlos
     // Ordenar slots ocupados por hora de inicio
     busySlots.sort((a, b) => a.start.valueOf() - b.start.valueOf());
+    
+    // Usar eventos ya filtrados
+    const busySlotsFinal = busySlots;
 
-    console.log(`   - Slots ocupados por eventos: ${busySlots.length}`);
-    console.log(`   📋 Detalle de slots ocupados:`);
-    busySlots.forEach((slot, index) => {
-      console.log(`      ${index + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} - ${slot.type}`);
+    // SOLUCIÓN DEFINITIVA: Crear un mapa de horas ocupadas ANTES de generar slots
+    // Esto detecta TODOS los eventos simultáneos de una vez
+    const occupiedHoursMap = new Map(); // Map<hour, count>
+    const eventsByHourMap = new Map(); // Map<hour, events[]>
+    
+    busySlotsFinal.forEach(event => {
+      const eventHour = event.start.hour();
+      const eventMinute = event.start.minute();
+      const hourKey = `${eventHour}:${eventMinute.toString().padStart(2, '0')}`;
+      
+      // Contar eventos por hora
+      const currentCount = occupiedHoursMap.get(eventHour) || 0;
+      occupiedHoursMap.set(eventHour, currentCount + 1);
+      
+      // Agrupar eventos por hora exacta
+      if (!eventsByHourMap.has(hourKey)) {
+        eventsByHourMap.set(hourKey, []);
+      }
+      eventsByHourMap.get(hourKey).push(event);
+    });
+    
+    // Identificar horas con múltiples eventos simultáneos
+    const simultaneousHours = new Set();
+    occupiedHoursMap.forEach((count, hour) => {
+      if (count >= 2) {
+        simultaneousHours.add(hour);
+        console.log(`   🚫 HORA CON MÚLTIPLES EVENTOS: ${hour}:00 tiene ${count} evento(s) simultáneo(s)`);
+        const hourKey = `${hour}:00`;
+        const events = eventsByHourMap.get(hourKey) || [];
+        events.forEach((evt, idx) => {
+          console.log(`      ${idx + 1}. "${evt.originalSummary || evt.type}" (${evt.start.format('HH:mm')}-${evt.end.format('HH:mm')})`);
+        });
+      }
     });
 
+    console.log(`   - Slots ocupados por eventos (del día ${targetDateStr}): ${busySlotsFinal.length}`);
+    console.log(`   - Horas con eventos simultáneos: ${simultaneousHours.size} (${Array.from(simultaneousHours).join(', ')})`);
+    console.log(`   📋 === RESUMEN DE EVENTOS QUE DEBERÍAN BLOQUEAR SLOTS ===`);
+    if (busySlotsFinal.length === 0) {
+      console.log(`      ⚠️ No se encontraron eventos ocupados en este día`);
+      console.log(`      ✅ Todos los slots deberían estar disponibles`);
+    } else {
+      console.log(`      📊 Total eventos encontrados: ${busySlotsFinal.length}`);
+      busySlotsFinal.forEach((slot, index) => {
+        const durationHours = slot.end.diff(slot.start, 'hours', true);
+        const eventHour = slot.start.hour();
+        const eventMin = slot.start.minute();
+        const isSimultaneous = simultaneousHours.has(eventHour);
+        
+        console.log(`      ${index + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} (${durationHours.toFixed(2)} horas) - ${slot.type} ${isSimultaneous ? '⚠️ SIMULTÁNEO' : ''}`);
+        console.log(`         📅 Fecha: ${slot.start.format('YYYY-MM-DD')}`);
+        console.log(`         ⏰ Hora inicio: ${eventHour}:${eventMin.toString().padStart(2, '0')}`);
+        console.log(`         🚫 Este evento DEBERÍA bloquear el slot ${eventHour}:00-${eventHour + 1}:00`);
+        console.log(`         (${slot.start.format('YYYY-MM-DD HH:mm:ss z')} → ${slot.end.format('YYYY-MM-DD HH:mm:ss z')})`);
+      });
+    }
+
     // Función auxiliar para verificar si un horario está fuera del horario laboral
+    // CORRECCIÓN: Permitir hasta la última hora (7 PM) como inicio de sesión
     const isOutsideWorkingHours = (time) => {
       const hour = time.hour();
-      return hour < workingHours.start || hour >= workingHours.end;
+      return hour < workingHours.start || hour > workingHours.end;
     };
 
     // Generar slots hora por hora y verificar disponibilidad individualmente
     const availableSlots = [];
     
     // Función auxiliar para verificar si un slot específico está ocupado
+    // CORRECCIÓN CRÍTICA: Cada slot se evalúa INDEPENDIENTEMENTE
+    // Un slot está ocupado SOLO si hay un evento que solapa con ese slot específico
     const isSlotOccupied = (slotTime) => {
       const slotEnd = slotTime.clone().add(1, 'hour');
+      const slotHour = slotTime.hour();
+      const slotDate = slotTime.format('YYYY-MM-DD');
       
-      console.log(`      🔎 Verificando overlap para slot ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}:`);
+      // CORRECCIÓN CRÍTICA: Usar solo eventos del día objetivo (ya filtrados arriba)
+      // Si no hay eventos ocupados, el slot está disponible
+      if (busySlotsFinal.length === 0) {
+        return false;
+      }
       
-      for (const busySlot of busySlots) {
-        // Verificar si hay solapamiento entre el slot propuesto y el evento ocupado
-        // Un slot de 1 hora está ocupado si:
-        // - El inicio del slot es antes del fin del evento Y
-        // - El fin del slot es después del inicio del evento
-        const hasOverlap = slotTime.isBefore(busySlot.end) && slotEnd.isAfter(busySlot.start);
+      console.log(`      🔎 Verificando overlap para slot ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')} (hora ${slotHour}):`);
+      console.log(`         Total eventos a verificar: ${busySlotsFinal.length}`);
+      console.log(`         Slot inicio: ${slotTime.format('YYYY-MM-DD HH:mm:ss z')}`);
+      console.log(`         Slot fin: ${slotEnd.format('YYYY-MM-DD HH:mm:ss z')}`);
+      console.log(`         Slot fecha: ${slotDate}`);
+      
+      // CORRECCIÓN CRÍTICA: Identificar eventos que empiezan exactamente a la misma hora del slot
+      // Esto es importante para detectar eventos duplicados/simultáneos
+      // NUEVA FUNCIONALIDAD: Si hay 2 o más eventos a la misma hora, el slot se marca como NO disponible
+      // Normalizar slotTime para comparación precisa
+      const slotTimeNormalized = slotTime.clone().second(0).millisecond(0);
+      const slotEndNormalized = slotTimeNormalized.clone().add(1, 'hour');
+      const slotStartHour = slotTimeNormalized.hour();
+      const slotStartMin = slotTimeNormalized.minute();
+      
+      // SOLUCIÓN DEFINITIVA: Usar el mapa pre-construido para verificación rápida
+      // Esto es más eficiente y garantiza que TODOS los eventos simultáneos se detecten
+      const eventCount = occupiedHoursMap.get(slotStartHour) || 0;
+      const hourKey = `${slotStartHour}:${slotStartMin.toString().padStart(2, '0')}`;
+      const eventsAtThisHour = eventsByHourMap.get(hourKey) || [];
+      
+      let slotIsOccupied = false;
+      let blockingEvent = null;
+      let blockingEventsCount = 0;
+      
+      // CORRECCIÓN CRÍTICA: Si hay eventos que empiezan exactamente a esta hora, el slot está OCUPADO
+      // Un evento que empieza a las 13:00 bloquea el slot 13:00-14:00
+      if (eventCount >= 1) {
+        console.log(`         🔍 Verificando eventos a la hora ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')}`);
+        console.log(`         📊 Total eventos encontrados a esta hora: ${eventsAtThisHour.length}`);
         
-        console.log(`         Evento: ${busySlot.start.format('HH:mm')}-${busySlot.end.format('HH:mm')} | Overlap: ${hasOverlap ? 'SÍ ❌' : 'NO ✓'}`);
+        // Verificar que el evento realmente empieza exactamente cuando el slot empieza
+        const eventsAtExactTime = eventsAtThisHour.filter(evt => {
+          const evtStartHour = evt.start.hour();
+          const evtStartMin = evt.start.minute();
+          const matches = evtStartHour === slotStartHour && evtStartMin === slotStartMin;
+          
+          console.log(`            🔎 Evento: "${evt.originalSummary || evt.type}"`);
+          console.log(`               - Hora inicio evento: ${evtStartHour}:${evtStartMin.toString().padStart(2, '0')}`);
+          console.log(`               - Hora inicio slot: ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')}`);
+          console.log(`               - ¿Coinciden exactamente? ${matches ? '✅ SÍ - BLOQUEA SLOT' : '❌ NO'}`);
+          
+          return matches;
+        });
         
-        if (hasOverlap) {
-          console.log(`         🔒 CONFLICTO con: ${busySlot.type}`);
+        if (eventsAtExactTime.length > 0) {
+          // HAY EVENTOS QUE EMPIEZAN EXACTAMENTE A ESTA HORA - Slot OCUPADO
+          slotIsOccupied = true;
+          blockingEvent = eventsAtExactTime[0];
+          blockingEventsCount = eventsAtExactTime.length;
+          
+          console.log(`         🚫 EVENTO(S) QUE EMPIEZA(N) EXACTAMENTE A LAS ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')} - Slot OCUPADO`);
+          eventsAtExactTime.forEach((evt, idx) => {
+            console.log(`            ${idx + 1}. "${evt.originalSummary || evt.type}" (${evt.start.format('HH:mm')}-${evt.end.format('HH:mm')})`);
+            console.log(`               📅 Fecha evento: ${evt.start.format('YYYY-MM-DD')}`);
+            console.log(`               📅 Fecha slot: ${slotDate}`);
+          });
+          
+          // Retornar inmediatamente - no necesitamos verificar más
+          // Si un evento empieza exactamente cuando el slot empieza, definitivamente lo bloquea
+          console.log(`         ❌ RETORNANDO TRUE - Slot está OCUPADO por evento(s) que empiezan exactamente a esta hora`);
           return true;
+        } else {
+          console.log(`         ℹ️ No hay eventos que empiecen exactamente a las ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')}, continuando verificación de solapamiento...`);
         }
       }
       
-      console.log(`         ✅ Sin conflictos`);
-      return false;
+      // CORRECCIÓN: Verificar cada evento individualmente
+      // Si UN evento solapa con el slot, el slot está ocupado
+      // Pero cada slot se evalúa INDEPENDIENTEMENTE - un evento a las 10 AM NO debe bloquear el slot de 11 AM
+      // NOTA: Si ya detectamos eventos simultáneos, seguimos verificando para contar todos los conflictos
+      
+      // Usar solo eventos del día objetivo (ya filtrados)
+      const eventsToCheck = busySlotsFinal;
+      
+      for (const busySlot of eventsToCheck) {
+        // CORRECCIÓN CRÍTICA: Verificar si hay solapamiento entre el slot propuesto y el evento ocupado
+        // 
+        // REGLAS DE SOLAPAMIENTO:
+        // 1. Si el evento TERMINA exactamente cuando el slot EMPIEZA → NO hay solapamiento (slot disponible)
+        //    Ejemplo: Evento 12:00-13:00 NO bloquea slot 13:00-14:00
+        // 2. Si el evento EMPIEZA exactamente cuando el slot EMPIEZA → SÍ hay solapamiento (slot ocupado)
+        //    Ejemplo: Evento 13:00-14:00 SÍ bloquea slot 13:00-14:00
+        // 3. Si el evento SOLAPA con el slot → SÍ hay solapamiento (slot ocupado)
+        //    Ejemplo: Evento 12:30-13:30 SÍ bloquea slot 13:00-14:00
+        //
+        // SOLAPAMIENTO REAL ocurre cuando:
+        // - El slot empieza ANTES de que termine el evento Y
+        // - El slot termina DESPUÉS de que empiece el evento
+        // - EXCEPTO cuando el evento termina exactamente cuando el slot empieza
+        
+        // CORRECCIÓN CRÍTICA: Lógica de solapamiento simplificada y más robusta
+        // 
+        // REGLAS DE SOLAPAMIENTO:
+        // 1. Si el evento TERMINA exactamente cuando el slot EMPIEZA → NO hay solapamiento
+        //    Ejemplo: Evento 12:00-13:00 NO bloquea slot 13:00-14:00
+        // 2. Si el evento EMPIEZA exactamente cuando el slot EMPIEZA → SÍ hay solapamiento
+        //    Ejemplo: Evento 10:00-11:00 SÍ bloquea slot 10:00-11:00
+        // 3. Si el evento SOLAPA con el slot → SÍ hay solapamiento
+        //    Ejemplo: Evento 10:00-11:00 SÍ bloquea slot 10:00-11:00
+        //
+        // SOLAPAMIENTO ocurre cuando:
+        // - El slot empieza ANTES de que termine el evento Y
+        // - El slot termina DESPUÉS de que empiece el evento
+        // - EXCEPTO cuando el evento termina exactamente cuando el slot empieza
+        
+        // CORRECCIÓN CRÍTICA: Verificar que el evento esté en el mismo día que el slot
+        // (Los eventos ya fueron filtrados por fecha arriba, pero verificamos de nuevo por seguridad)
+        const eventDate = busySlot.start.format('YYYY-MM-DD');
+        if (eventDate !== slotDate) {
+          console.log(`         ⏭️ Saltando evento: está en fecha ${eventDate} pero el slot está en ${slotDate}`);
+          continue;
+        }
+        
+        // CORRECCIÓN CRÍTICA: Normalizar ambos para comparación precisa
+        // Los eventos ya están normalizados arriba, pero normalizamos de nuevo para asegurar consistencia
+        // NOTA: slotTimeNormalized y slotEndNormalized ya están definidos arriba, no redefinirlos aquí
+        const eventStartNormalized = busySlot.start.clone().second(0).millisecond(0);
+        const eventEndNormalized = busySlot.end.clone().second(0).millisecond(0);
+        
+        // CORRECCIÓN CRÍTICA: Comparación directa de horas y minutos para mayor precisión
+        const eventStartHour = eventStartNormalized.hour();
+        const eventStartMin = eventStartNormalized.minute();
+        const eventEndHour = eventEndNormalized.hour();
+        const eventEndMin = eventEndNormalized.minute();
+        const slotStartHour = slotTimeNormalized.hour();
+        const slotStartMin = slotTimeNormalized.minute();
+        
+        // Caso 1: Si el evento TERMINA exactamente cuando el slot EMPIEZA → NO hay solapamiento
+        // Ejemplo: Evento 12:00-13:00 NO bloquea slot 13:00-14:00
+        if (eventEndHour === slotStartHour && eventEndMin === slotStartMin) {
+          console.log(`         ✅ CASO LÍMITE: Evento termina exactamente cuando slot empieza (${eventEndNormalized.format('HH:mm')} = ${slotTimeNormalized.format('HH:mm')}) - NO hay solapamiento`);
+          continue; // Continuar con el siguiente evento
+        }
+        
+        // Caso 1.5: Si el evento EMPIEZA exactamente cuando el slot TERMINA → NO hay solapamiento
+        // Ejemplo: Evento 14:00-15:00 NO bloquea slot 13:00-14:00
+        const slotEndHour = slotEndNormalized.hour();
+        const slotEndMin = slotEndNormalized.minute();
+        if (eventStartHour === slotEndHour && eventStartMin === slotEndMin) {
+          console.log(`         ✅ CASO LÍMITE: Evento empieza exactamente cuando slot termina (${eventStartNormalized.format('HH:mm')} = ${slotEndNormalized.format('HH:mm')}) - NO hay solapamiento`);
+          continue; // Continuar con el siguiente evento
+        }
+        
+        // Caso 2: Si el evento EMPIEZA exactamente cuando el slot EMPIEZA → SÍ hay solapamiento
+        // Ejemplo: Evento 10:00-11:00 SÍ bloquea slot 10:00-11:00
+        // NOTA: Si ya detectamos eventos simultáneos arriba (eventsAtThisHour), este caso ya fue manejado
+        // Solo procesar aquí si NO fue detectado arriba (caso raro pero posible)
+        if (eventStartHour === slotStartHour && eventStartMin === slotStartMin) {
+          // Si ya detectamos eventos simultáneos arriba, este evento ya fue contado
+          // Verificar si este evento específico ya fue contado en eventsAtThisHour
+          const wasAlreadyCounted = eventsAtThisHour.length > 0 && 
+                                   eventsAtThisHour.some(evt => 
+                                     evt.start.isSame(busySlot.start, 'minute') &&
+                                     evt.originalSummary === busySlot.originalSummary
+                                   );
+          
+          if (wasAlreadyCounted) {
+            // Este evento ya fue contado arriba en eventsAtThisHour
+            console.log(`         ℹ️ Evento ya contado arriba (eventos simultáneos): "${busySlot.originalSummary || busySlot.type}"`);
+            continue; // Saltar este evento, ya fue procesado
+          }
+          
+          // Si llegamos aquí, este evento empieza a la misma hora pero no fue detectado arriba
+          // (caso raro, pero manejarlo por seguridad)
+          console.log(`         ⚠️ Evento empieza exactamente cuando slot empieza (${eventStartNormalized.format('HH:mm')} = ${slotTimeNormalized.format('HH:mm')}) - SÍ hay solapamiento`);
+          console.log(`         📋 Evento: "${busySlot.originalSummary || busySlot.type}" de ${eventStartNormalized.format('HH:mm')} a ${eventEndNormalized.format('HH:mm')}`);
+          
+          if (!slotIsOccupied) {
+            // Este es el primer evento que detectamos en el loop (caso raro)
+            blockingEvent = busySlot;
+            slotIsOccupied = true;
+            blockingEventsCount = 1;
+          } else {
+            // Ya estaba ocupado, agregar este evento al conteo
+            blockingEventsCount++;
+            console.log(`         ⚠️ EVENTO ADICIONAL detectado: "${busySlot.originalSummary || busySlot.type}" - Total eventos bloqueando: ${blockingEventsCount}`);
+          }
+          // Continuar verificando otros eventos para logging, pero el slot ya está marcado como ocupado
+          continue;
+        }
+        
+        // Caso 3: Verificar solapamiento general
+        // CORRECCIÓN CRÍTICA: Lógica simplificada y robusta que captura TODOS los casos de solapamiento
+        // 
+        // Regla general de solapamiento de intervalos [a1, a2] y [b1, b2]:
+        // Hay solapamiento si: a1 < b2 AND a2 > b1
+        //
+        // En nuestro caso:
+        // - Slot: [slotTimeNormalized, slotEndNormalized]
+        // - Evento: [eventStartNormalized, eventEndNormalized]
+        //
+        // Hay solapamiento si:
+        // - slotTimeNormalized < eventEndNormalized AND slotEndNormalized > eventStartNormalized
+        //
+        // EXCEPCIÓN: Si eventEndNormalized == slotTimeNormalized (evento termina exactamente cuando slot empieza),
+        // NO hay solapamiento (ya manejado en Caso 1)
+        
+        // CORRECCIÓN: Verificar solapamiento usando la regla general
+        // Esto captura TODOS los casos de solapamiento excepto el caso límite ya excluido
+        const slotStartsBeforeEventEnds = slotTimeNormalized.isBefore(eventEndNormalized);
+        const slotEndsAfterEventStarts = slotEndNormalized.isAfter(eventStartNormalized);
+        
+        // Verificar solapamiento básico
+        let hasOverlap = slotStartsBeforeEventEnds && slotEndsAfterEventStarts;
+        
+        // CORRECCIÓN CRÍTICA: La verificación básica ya captura todos los casos de solapamiento real
+        // NO usar comparaciones inclusivas porque pueden marcar incorrectamente como solapados
+        // los slots que solo se tocan en un punto (ej: slot 13:00-14:00 y evento 14:00-15:00)
+        // El Caso 1 ya maneja correctamente cuando evento termina exactamente cuando slot empieza
+        
+        // CORRECCIÓN ADICIONAL: Verificación explícita de casos específicos para asegurar que no se nos escape ningún solapamiento
+        // Esto es una verificación de seguridad adicional
+        // IMPORTANTE: Excluir casos donde los intervalos solo se tocan en un punto
+        if (!hasOverlap) {
+          // Verificar casos específicos que podrían no ser capturados por la condición general
+          
+          // Caso A: Evento empieza dentro del slot (después del inicio, antes o igual al fin)
+          // EXCLUIR: Si evento empieza exactamente cuando slot termina → NO hay solapamiento
+          const eventStartsDuringSlot = eventStartNormalized.isAfter(slotTimeNormalized, 'minute') && 
+                                       eventStartNormalized.isBefore(slotEndNormalized, 'minute');
+          
+          // Caso B: Evento termina dentro del slot (después del inicio, antes del fin)
+          // EXCLUIR: Si evento termina exactamente cuando slot empieza → NO hay solapamiento (ya manejado en Caso 1)
+          const eventEndsDuringSlot = eventEndNormalized.isAfter(slotTimeNormalized, 'minute') && 
+                                     eventEndNormalized.isBefore(slotEndNormalized, 'minute');
+          
+          // Caso C: Evento contiene completamente el slot
+          // EXCLUIR: Si evento empieza cuando slot empieza y termina cuando slot termina → ya manejado en Caso 2
+          const eventContainsSlot = eventStartNormalized.isBefore(slotTimeNormalized, 'minute') && 
+                                   eventEndNormalized.isAfter(slotEndNormalized, 'minute');
+          
+          // Caso D: Slot contiene completamente el evento
+          // EXCLUIR: Si slot empieza cuando evento empieza → ya manejado en Caso 2
+          const slotContainsEvent = slotTimeNormalized.isBefore(eventStartNormalized, 'minute') && 
+                                   slotEndNormalized.isAfter(eventEndNormalized, 'minute');
+          
+          // Si alguno de estos casos se cumple, definitivamente hay solapamiento
+          if (eventStartsDuringSlot || eventEndsDuringSlot || eventContainsSlot || slotContainsEvent) {
+            hasOverlap = true;
+            console.log(`         ⚠️ Solapamiento detectado por verificación adicional:`);
+            if (eventStartsDuringSlot) console.log(`            - Evento empieza dentro del slot (${eventStartNormalized.format('HH:mm')})`);
+            if (eventEndsDuringSlot) console.log(`            - Evento termina dentro del slot (${eventEndNormalized.format('HH:mm')})`);
+            if (eventContainsSlot) console.log(`            - Evento contiene completamente el slot`);
+            if (slotContainsEvent) console.log(`            - Slot contiene completamente el evento`);
+          }
+        }
+        
+        // Logging específico para el slot de 1 PM en sábados
+        const isSaturday1PM = slotTime.hour() === 13 && dateMoment.day() === 6;
+        if (isSaturday1PM) {
+          console.log(`         🔍 === VERIFICACIÓN ESPECIAL SLOT 1 PM (SÁBADO) ===`);
+          console.log(`         Evento: ${busySlot.start.format('HH:mm')}-${busySlot.end.format('HH:mm')} (${busySlot.type})`);
+          console.log(`         Slot: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+          console.log(`         ¿Evento empieza a la 1 PM? ${busySlot.start.isSame(slotTime, 'minute') ? 'SÍ - Slot DEBE estar ocupado' : 'NO'}`);
+          console.log(`         ¿Evento termina exactamente cuando slot empieza? ${busySlot.end.isSame(slotTime, 'minute') ? 'SÍ - Slot DEBE estar disponible' : 'NO'}`);
+          console.log(`         Slot inicio (${slotTime.format('HH:mm:ss')}) < Evento fin (${busySlot.end.format('HH:mm:ss')}): ${slotStartsBeforeEventEnds}`);
+          console.log(`         Slot fin (${slotEnd.format('HH:mm:ss')}) > Evento inicio (${busySlot.start.format('HH:mm:ss')}): ${slotEndsAfterEventStarts}`);
+          console.log(`         Overlap: ${hasOverlap ? 'SÍ ❌ - Slot OCUPADO' : 'NO ✓ - Slot DISPONIBLE'}`);
+        } else {
+          console.log(`         Evento: ${busySlot.start.format('HH:mm')}-${busySlot.end.format('HH:mm')} (${busySlot.type})`);
+          console.log(`            Evento inicio: ${busySlot.start.format('YYYY-MM-DD HH:mm:ss z')}`);
+          console.log(`            Evento fin: ${busySlot.end.format('YYYY-MM-DD HH:mm:ss z')}`);
+          console.log(`            Slot: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+          console.log(`            Slot inicio (${slotTime.format('HH:mm')}) < Evento fin (${busySlot.end.format('HH:mm')}): ${slotStartsBeforeEventEnds}`);
+          console.log(`            Slot fin (${slotEnd.format('HH:mm')}) > Evento inicio (${busySlot.start.format('HH:mm')}): ${slotEndsAfterEventStarts}`);
+          console.log(`            Overlap: ${hasOverlap ? 'SÍ ❌ - Slot DEBE estar OCUPADO' : 'NO ✓ - Slot DISPONIBLE'}`);
+          
+          // CORRECCIÓN CRÍTICA: Validación de seguridad para eventos que empiezan a la misma hora
+          // Esta validación solo se ejecuta si NO detectamos el solapamiento en el Caso 2
+          // Si un evento empieza exactamente cuando el slot empieza, DEBE haber solapamiento
+          // NOTA: Esta validación solo se ejecuta si no entramos al Caso 2 (línea 423)
+          // porque si entramos al Caso 2, hacemos continue y nunca llegamos aquí
+          if (eventStartHour === slotStartHour && eventStartMin === slotStartMin && !slotIsOccupied) {
+            console.error(`            ❌ ERROR CRÍTICO: Evento empieza a la misma hora que el slot pero no se detectó solapamiento en Caso 2!`);
+            console.error(`            ❌ Esto NO debería suceder - el Caso 2 debería haberlo detectado`);
+            console.error(`            ❌ Evento: ${eventStartNormalized.format('YYYY-MM-DD HH:mm:ss')} - ${eventEndNormalized.format('YYYY-MM-DD HH:mm:ss')}`);
+            console.error(`            ❌ Slot: ${slotTimeNormalized.format('YYYY-MM-DD HH:mm:ss')} - ${slotEndNormalized.format('YYYY-MM-DD HH:mm:ss')}`);
+            console.error(`            ❌ FORZANDO slot como ocupado debido a error de detección`);
+            // FORZAR el slot como ocupado si hay un error de detección
+            blockingEvent = busySlot;
+            slotIsOccupied = true;
+            blockingEventsCount = 1;
+            // Continuar para detectar otros eventos potenciales
+          }
+        }
+        
+        if (hasOverlap) {
+          // CORRECCIÓN: No hacer break aquí para detectar TODOS los eventos que bloquean este slot
+          // Esto es especialmente importante para eventos simultáneos
+          if (!slotIsOccupied) {
+            blockingEvent = busySlot;
+            slotIsOccupied = true;
+            blockingEventsCount = 1;
+          } else {
+            blockingEventsCount++;
+            console.log(`         ⚠️ EVENTO ADICIONAL BLOQUEANDO: "${busySlot.originalSummary || busySlot.type}" - Total: ${blockingEventsCount}`);
+          }
+          
+          if (isSaturday1PM) {
+            console.log(`         🔒 CONFLICTO DETECTADO con slot de 1 PM: ${busySlot.type}`);
+            console.log(`         ⚠️ ADVERTENCIA: El slot de 1 PM está siendo marcado como ocupado`);
+          } else {
+            console.log(`         🔒 CONFLICTO DETECTADO con: ${busySlot.type}`);
+          }
+          // Continuar verificando otros eventos para logging completo
+          // El slot ya está marcado como ocupado, pero queremos registrar todos los conflictos
+        }
+      }
+      
+      // Retornar el resultado después de verificar TODOS los eventos
+      if (slotIsOccupied) {
+        if (blockingEventsCount >= 2) {
+          // Caso especial: Múltiples eventos simultáneos a la misma hora
+          console.log(`         ❌ Slot OCUPADO - Bloqueado por ${blockingEventsCount} evento(s) simultáneo(s) a las ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')}`);
+          console.log(`            🚫 Esta hora NO está disponible debido a múltiples eventos simultáneos`);
+          console.log(`            Primer evento bloqueador: ${blockingEvent ? `${blockingEvent.start.format('HH:mm')}-${blockingEvent.end.format('HH:mm')} - "${blockingEvent.originalSummary || blockingEvent.type}"` : 'N/A'}`);
+          console.log(`            ⚠️ IMPORTANTE: Hay ${blockingEventsCount} evento(s) que empiezan a la misma hora - el slot está ocupado`);
+        } else {
+          console.log(`         ❌ Slot OCUPADO - Bloqueado por: ${blockingEvent ? blockingEvent.type : 'evento desconocido'}`);
+          console.log(`            Evento bloqueador: ${blockingEvent ? `${blockingEvent.start.format('HH:mm')}-${blockingEvent.end.format('HH:mm')} - "${blockingEvent.originalSummary || blockingEvent.type}"` : 'N/A'}`);
+        }
+        return true;
+      } else {
+        console.log(`         ✅ Sin conflictos - Slot DISPONIBLE`);
+        console.log(`            Ningún evento solapa con este slot específico`);
+        // Verificación adicional de seguridad: confirmar que no hay eventos que empiecen exactamente a esta hora
+        // Esta es una verificación de seguridad para detectar posibles errores en la lógica
+        // NOTA: Usar slotStartHour que está definido arriba, no slotHour
+        const eventsAtSlotStartTimeFinal = busySlotsFinal.filter(event => {
+          const eventStartNormalized = event.start.clone().second(0).millisecond(0);
+          const eventStartHour = eventStartNormalized.hour();
+          const eventStartMin = eventStartNormalized.minute();
+          // Verificar si el evento empieza exactamente cuando el slot empieza (misma hora y minutos)
+          return eventStartHour === slotStartHour && eventStartMin === slotStartMin;
+        });
+        if (eventsAtSlotStartTimeFinal.length > 0) {
+          console.error(`         ❌ ERROR CRÍTICO: Se encontraron ${eventsAtSlotStartTimeFinal.length} evento(s) que empiezan exactamente a las ${slotStartHour}:${slotStartMin.toString().padStart(2, '0')} pero NO se detectó solapamiento!`);
+          console.error(`         ❌ Esto NO debería suceder - debería haberse detectado arriba o en el Caso 2`);
+          eventsAtSlotStartTimeFinal.forEach(evt => {
+            console.error(`            - ${evt.start.format('HH:mm')}-${evt.end.format('HH:mm')} - "${evt.originalSummary || evt.type}"`);
+            const evtStartNorm = evt.start.clone().second(0).millisecond(0);
+            console.error(`              Evento normalizado: ${evtStartNorm.format('YYYY-MM-DD HH:mm:ss')} (hora: ${evtStartNorm.hour()}, min: ${evtStartNorm.minute()})`);
+            console.error(`              Slot normalizado: ${slotTimeNormalized.format('YYYY-MM-DD HH:mm:ss')} (hora: ${slotStartHour}, min: ${slotStartMin})`);
+          });
+          console.error(`         ❌ FORZANDO slot como ocupado por seguridad debido a error de detección`);
+          // Si encontramos eventos que empiezan exactamente a esta hora pero no detectamos solapamiento,
+          // algo está mal. Marcar el slot como ocupado por seguridad.
+          return true;
+        }
+        return false;
+      }
     };
 
-    // Generar slots de hora en hora desde el inicio hasta el fin del día laboral
+    // SOLUCIÓN DEFINITIVA: Forzar horario de inicio a 10 AM y fin a 7 PM antes de generar slots
+    if (dayOfWeek !== 6) {
+      if (workingHours.start < 10) {
+        console.warn(`   ⚠️ CORRIGIENDO: Horario de inicio era ${workingHours.start}:00, forzando a 10:00`);
+        workingHours.start = 10;
+      }
+      if (workingHours.end > 19) {
+        console.warn(`   ⚠️ CORRIGIENDO: Horario de fin era ${workingHours.end}:00, forzando a 19:00 (7 PM)`);
+        workingHours.end = 19;
+      }
+    }
+    
+    // CORRECCIÓN: Generar slots de hora en hora desde el inicio hasta el fin del día laboral
+    // Incluir el slot de la última hora como última sesión del día
+    // Para sábados: 10 AM - 1 PM (última sesión: 1 PM - 2 PM)
+    // Para días normales: 10 AM - 7 PM (última sesión: 7 PM - 8 PM)
     console.log(`\n🔄 === GENERANDO SLOTS DE ${workingHours.start}:00 A ${workingHours.end}:00 ===`);
-    for (let hour = workingHours.start; hour < workingHours.end; hour++) {
-      const slotTime = dateMoment.clone().hour(hour).minute(0).second(0);
+    console.log(`   ✅ Horario de inicio: ${workingHours.start}:00 ${workingHours.start === 10 ? '(CORRECTO)' : '(VERIFICAR)'}`);
+    console.log(`   📋 Rango completo: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    const totalPossibleSlots = workingHours.end - workingHours.start + 1;
+    console.log(`   📋 Total slots posibles: ${totalPossibleSlots}`);
+    const slotsToGenerate = Array.from({length: totalPossibleSlots}, (_, i) => workingHours.start + i);
+    console.log(`   📋 Slots a generar: ${slotsToGenerate.join(', ')}`);
+    console.log(`   📋 Eventos ocupados encontrados: ${busySlots.length}`);
+    if (busySlots.length > 0) {
+      console.log(`   📋 Eventos que podrían bloquear slots:`);
+      busySlots.forEach((slot, idx) => {
+        const durationHours = slot.end.diff(slot.start, 'hours', true);
+        console.log(`      ${idx + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} (${durationHours.toFixed(2)} horas) - ${slot.type}`);
+      });
+    }
+    
+    // CORRECCIÓN CRÍTICA: Rastrear qué slots se evaluaron y por qué fueron rechazados
+    const slotsEvaluated = [];
+    const slotsRejected = [];
+    
+    // SOLUCIÓN DEFINITIVA: Asegurar que el bucle empiece desde 10 AM (excepto sábados)
+    const startHour = (dayOfWeek !== 6 && workingHours.start < 10) ? 10 : workingHours.start;
+    
+    for (let hour = startHour; hour <= workingHours.end; hour++) {
+      // SOLUCIÓN DEFINITIVA: Verificar que no se generen slots antes de las 10 AM
+      if (dayOfWeek !== 6 && hour < 10) {
+        console.log(`      ❌ RECHAZADO: Hora ${hour}:00 es antes de las 10:00 AM (forzado)`);
+        slotsRejected.push({ hour, reason: 'antes_de_10am' });
+        continue;
+      }
+      
+      // Normalizar a minutos exactos (sin segundos/milisegundos) para comparaciones precisas
+      const slotTime = dateMoment.clone().hour(hour).minute(0).second(0).millisecond(0);
       const slotEnd = slotTime.clone().add(1, 'hour');
       
-      console.log(`\n   🔍 Evaluando slot ${hour}: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+      // Logging específico para sábados
+      const isSaturday = workingHours.end === 13;
+      const isSaturdaySlot = isSaturday && hour === 13;
+      const isSaturday10AM = isSaturday && hour === 10;
+      const isSaturday12PM = isSaturday && hour === 12;
+      
+      if (isSaturdaySlot) {
+        console.log(`\n   🔍 === EVALUANDO SLOT DE 1 PM (SÁBADO) ===`);
+        console.log(`   📅 Slot: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+        console.log(`   📅 Este es el último slot del sábado - DEBE estar disponible si no hay conflicto`);
+      } else if (isSaturday10AM) {
+        console.log(`\n   🔍 === EVALUANDO SLOT DE 10 AM (SÁBADO) ===`);
+        console.log(`   📅 Slot: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+        console.log(`   📅 Este slot DEBE estar ocupado si hay eventos a las 10 AM`);
+        console.log(`   📅 Eventos encontrados: ${busySlots.length}`);
+        busySlots.forEach((slot, idx) => {
+          if (slot.start.hour() === 10 && slot.start.minute() === 0) {
+            console.log(`      ${idx + 1}. Evento a las 10 AM: ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} - ${slot.type}`);
+          }
+        });
+      } else if (isSaturday12PM) {
+        console.log(`\n   🔍 === EVALUANDO SLOT DE 12 PM (SÁBADO) ===`);
+        console.log(`   📅 Slot: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+        console.log(`   📅 Este slot DEBE estar disponible si no hay eventos que lo bloqueen`);
+      } else {
+        console.log(`\n   🔍 Evaluando slot ${hour}: ${slotTime.format('HH:mm')}-${slotEnd.format('HH:mm')}`);
+      }
+      
+      // CORRECCIÓN CRÍTICA: Rastrear cada slot evaluado
+      slotsEvaluated.push(hour);
       
       // Verificar restricciones básicas
-      if (isOutsideWorkingHours(slotTime)) {
-        console.log(`      ❌ RECHAZADO: fuera de horario laboral`);
+      // CORRECCIÓN: Permitir el slot de la última hora (1 PM para sábados, 7 PM para días normales)
+      if (hour > workingHours.end) {
+        console.log(`      ❌ RECHAZADO: fuera de horario laboral (hora ${hour} > ${workingHours.end})`);
+        slotsRejected.push({ hour, reason: 'fuera_horario_laboral' });
         continue;
+      }
+      
+      // CORRECCIÓN: Verificar si es horario de comida (excluir slots durante el horario de comida)
+      if (workingHours.hasLunch && workingHours.lunchStart !== undefined && workingHours.lunchEnd !== undefined) {
+        if (hour >= workingHours.lunchStart && hour < workingHours.lunchEnd) {
+          console.log(`      ❌ RECHAZADO: Horario de comida (${workingHours.lunchStart}:00-${workingHours.lunchEnd}:00)`);
+          slotsRejected.push({ hour, reason: 'horario_comida' });
+          continue;
+        }
       }
       
       if (isToday && slotTime.isBefore(minimumBookingTime)) {
         console.log(`      ❌ RECHAZADO: muy pronto (hora actual: ${now.format('HH:mm')}, mínimo: ${minimumBookingTime.format('HH:mm')})`);
+        slotsRejected.push({ hour, reason: 'muy_pronto' });
         continue;
       }
       
-      // Verificar si el slot está ocupado por algún evento (incluyendo comida)
-      if (isSlotOccupied(slotTime)) {
-        console.log(`      ❌ RECHAZADO: ocupado por evento`);
+      // CORRECCIÓN CRÍTICA: Verificar si el slot está ocupado por algún evento (incluyendo comida)
+      // Envolver en try-catch para evitar que un error en un slot afecte a los demás
+      let slotIsOccupied = false;
+      try {
+        slotIsOccupied = isSlotOccupied(slotTime);
+      } catch (slotError) {
+        console.error(`      ⚠️ ERROR verificando slot ${hour}:00:`, slotError.message);
+        console.error(`      ⚠️ Continuando con el siguiente slot...`);
+        // Si hay un error verificando el slot, asumir que está disponible (mejor mostrar que ocultar)
+        slotIsOccupied = false;
+      }
+      
+      if (slotIsOccupied) {
+        if (isSaturdaySlot) {
+          console.log(`      ❌ RECHAZADO: Slot de 1 PM ocupado por evento`);
+          console.log(`      ⚠️ ADVERTENCIA: El slot de 1 PM debería estar disponible para sábados`);
+        } else {
+          console.log(`      ❌ RECHAZADO: ocupado por evento`);
+        }
+        slotsRejected.push({ hour, reason: 'ocupado_por_evento' });
         continue;
       }
       
       // Si llegamos aquí, el slot está disponible
       const timeSlot = slotTime.format('HH:mm');
       availableSlots.push(timeSlot);
-      console.log(`      ✅ DISPONIBLE - Agregado a la lista`);
+      if (isSaturdaySlot) {
+        console.log(`      ✅ DISPONIBLE - Slot de 1 PM agregado correctamente`);
+      } else {
+        console.log(`      ✅ DISPONIBLE - Agregado a la lista`);
+      }
+    }
+    
+    // CORRECCIÓN CRÍTICA: Validar que se evaluaron todos los slots esperados
+    console.log(`\n🔍 === VALIDACIÓN DE SLOTS EVALUADOS ===`);
+    console.log(`   📋 Slots esperados: ${slotsToGenerate.length} (${slotsToGenerate.join(', ')})`);
+    console.log(`   📋 Slots evaluados: ${slotsEvaluated.length} (${slotsEvaluated.join(', ')})`);
+    console.log(`   📋 Slots disponibles: ${availableSlots.length} (${availableSlots.join(', ')})`);
+    console.log(`   📋 Slots rechazados: ${slotsRejected.length}`);
+    
+    if (slotsEvaluated.length !== slotsToGenerate.length) {
+      console.error(`   ⚠️ ADVERTENCIA: No se evaluaron todos los slots esperados!`);
+      console.error(`      Esperados: ${slotsToGenerate.length}, Evaluados: ${slotsEvaluated.length}`);
+      const missingSlots = slotsToGenerate.filter(h => !slotsEvaluated.includes(h));
+      console.error(`      Slots no evaluados: [${missingSlots.join(', ')}]`);
+    }
+    
+    if (slotsRejected.length > 0) {
+      console.log(`   📋 Razones de rechazo:`);
+      const reasonsCount = {};
+      slotsRejected.forEach(rej => {
+        reasonsCount[rej.reason] = (reasonsCount[rej.reason] || 0) + 1;
+      });
+      Object.entries(reasonsCount).forEach(([reason, count]) => {
+        console.log(`      - ${reason}: ${count} slot(s)`);
+      });
+    }
+    
+    // CORRECCIÓN CRÍTICA: Si no se generaron slots pero deberían haber, investigar
+    if (availableSlots.length === 0 && totalPossibleSlotsCalc > 0) {
+      console.error(`\n⚠️ === ADVERTENCIA CRÍTICA: NO SE GENERARON SLOTS DISPONIBLES ===`);
+      console.error(`   📋 Total slots posibles: ${totalPossibleSlotsCalc}`);
+      console.error(`   📋 Slots evaluados: ${slotsEvaluated.length}`);
+      console.error(`   📋 Slots rechazados: ${slotsRejected.length}`);
+      console.error(`   📋 Eventos encontrados: ${busySlots.length}`);
+      
+      if (busySlots.length > 0) {
+        console.error(`   🔍 Eventos que podrían estar bloqueando todos los slots:`);
+        busySlots.forEach((slot, idx) => {
+          const durationHours = slot.end.diff(slot.start, 'hours', true);
+          console.error(`      ${idx + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} (${durationHours.toFixed(2)} horas) - ${slot.type}`);
+        });
+      }
+      
+      // Si hay menos eventos que slots posibles, algo está mal
+      if (busySlots.length < totalPossibleSlotsCalc) {
+        console.error(`   ⚠️ PROBLEMA DETECTADO: Hay ${busySlots.length} eventos pero ${totalPossibleSlotsCalc} slots posibles`);
+        console.error(`   ⚠️ Esto sugiere que la lógica de detección de conflictos está marcando incorrectamente slots como ocupados`);
+      }
     }
 
-    console.log(`   - Slots disponibles: ${availableSlots.length} (cada hora)`);
-    console.log(`   - Slots generados: ${availableSlots.join(', ')}`);
+    console.log(`\n📊 === RESUMEN DE SLOTS GENERADOS ===`);
+    console.log(`   - Horario laboral: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    const totalPossibleSlotsFinal = workingHours.end - workingHours.start + 1;
+    console.log(`   - Total slots posibles: ${totalPossibleSlotsFinal}`);
+    console.log(`   - Eventos ocupados encontrados: ${busySlots.length}`);
+    console.log(`   - Slots disponibles: ${availableSlots.length}`);
+    console.log(`   - Slots ocupados: ${totalPossibleSlotsFinal - availableSlots.length}`);
+    
+    // CORRECCIÓN: Verificar que todos los slots esperados se evaluaron
+    const expectedSlotsList = Array.from({length: totalPossibleSlotsFinal}, (_, i) => {
+      const hour = workingHours.start + i;
+      return hour.toString().padStart(2, '0') + ':00';
+    });
+    const missingSlots = expectedSlotsList.filter(slot => !availableSlots.includes(slot));
+    if (missingSlots.length > 0) {
+      console.log(`   ⚠️ Slots que NO están disponibles pero deberían evaluarse: [${missingSlots.join(', ')}]`);
+      console.log(`   🔍 Esto puede indicar que estos slots están ocupados o fueron rechazados por otra razón`);
+    }
+    
+    // Verificación específica para sábados
+    const isSaturday = dateMoment.day() === 6;
+    if (isSaturday) {
+      console.log(`\n📅 === VERIFICACIÓN ESPECIAL PARA SÁBADO ===`);
+      console.log(`   - Horario sábado: 10:00 - 13:00 (última sesión: 13:00-14:00)`);
+      console.log(`   - Slots esperados: 10:00, 11:00, 12:00, 13:00`);
+      console.log(`   - Slots disponibles: [${availableSlots.join(', ')}]`);
+      console.log(`   - Slots rechazados: ${slotsRejected.length}`);
+      
+      // CORRECCIÓN CRÍTICA: Verificar cada slot esperado
+      const expectedSaturdaySlots = ['10:00', '11:00', '12:00', '13:00'];
+      expectedSaturdaySlots.forEach(expectedSlot => {
+        const isAvailable = availableSlots.includes(expectedSlot);
+        const wasRejected = slotsRejected.some(rej => {
+          const rejectedSlot = `${rej.hour.toString().padStart(2, '0')}:00`;
+          return rejectedSlot === expectedSlot;
+        });
+        const wasEvaluated = slotsEvaluated.includes(parseInt(expectedSlot.split(':')[0]));
+        
+        console.log(`   - Slot ${expectedSlot}:`);
+        console.log(`      ¿Está disponible? ${isAvailable ? '✅ SÍ' : '❌ NO'}`);
+        console.log(`      ¿Fue evaluado? ${wasEvaluated ? '✅ SÍ' : '❌ NO'}`);
+        if (wasRejected) {
+          const rejection = slotsRejected.find(rej => `${rej.hour.toString().padStart(2, '0')}:00` === expectedSlot);
+          console.log(`      ¿Fue rechazado? ❌ SÍ - Razón: ${rejection ? rejection.reason : 'desconocida'}`);
+        } else {
+          console.log(`      ¿Fue rechazado? ✅ NO`);
+        }
+      });
+      
+      console.log(`   - ¿Incluye slot de 1 PM (13:00)? ${availableSlots.includes('13:00') ? '✅ SÍ' : '❌ NO'}`);
+      if (!availableSlots.includes('13:00')) {
+        console.log(`   ⚠️ PROBLEMA: El slot de 1 PM NO está en la lista de disponibles`);
+        console.log(`   🔍 Revisar logs anteriores para ver por qué el slot de 1 PM fue rechazado`);
+      }
+      
+      // CORRECCIÓN CRÍTICA: Verificar si el slot de 10 AM está disponible cuando debería estar ocupado
+      if (availableSlots.includes('10:00') && busySlots.length > 0) {
+        console.log(`   ⚠️ ADVERTENCIA: El slot de 10 AM está disponible pero hay eventos en el calendario`);
+        console.log(`   🔍 Eventos que podrían estar bloqueando el slot de 10 AM:`);
+        busySlots.forEach((slot, idx) => {
+          if (slot.start.hour() === 10 && slot.start.minute() === 0) {
+            console.log(`      ${idx + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} - ${slot.type}`);
+            console.log(`         ⚠️ Este evento DEBERÍA bloquear el slot de 10 AM`);
+          }
+        });
+      }
+    }
+    
+    if (availableSlots.length > 0) {
+      console.log(`   ✅ Slots disponibles: [${availableSlots.join(', ')}]`);
+    } else {
+      console.log(`   ⚠️ ADVERTENCIA: No se generaron slots disponibles`);
+      console.log(`   🔍 Posibles causas:`);
+      console.log(`      - Todos los slots están ocupados`);
+      console.log(`      - Problema con la detección de eventos`);
+      console.log(`      - Problema con el rango de horarios`);
+      console.log(`   🔍 Eventos encontrados que podrían estar bloqueando todos los slots:`);
+      busySlots.forEach((slot, idx) => {
+        console.log(`      ${idx + 1}. ${slot.start.format('HH:mm')}-${slot.end.format('HH:mm')} - ${slot.type}`);
+      });
+    }
 
     return availableSlots;
   } catch (error) {

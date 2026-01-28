@@ -123,19 +123,6 @@ async function sendWhatsAppReminder24h(appointment) {
 }
 
 /**
- * Enviar recordatorio de cita por WhatsApp (15 minutos antes)
- */
-async function sendWhatsAppReminder15min(appointment) {
-  try {
-    const message = generateWhatsAppMessage15min(appointment);
-    return await sendWhatsAppMessage(appointment.clientPhone, message);
-  } catch (error) {
-    console.error('❌ Error enviando recordatorio WhatsApp 15min:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-/**
  * Generar mensaje de WhatsApp para recordatorio de 24h
  */
 function generateWhatsAppMessage24h(appointment) {
@@ -164,31 +151,10 @@ Te recordamos que tienes una cita programada para *mañana*:
 ⚠️ *¿Deseas confirmar tu asistencia?*
 
 Responde con:
-• ✅ *CONFIRMAR* - Para confirmar tu asistencia
-• 🔄 *REAGENDAR* - Si necesitas cambiar la fecha/hora
+• 1️⃣ *CONFIRMAR* - Para confirmar tu asistencia
+• 2️⃣ *REAGENDAR* - Si necesitas cambiar la fecha/hora
 
 📍 ${config.business.address}
-
-¡Te esperamos! 🌟`;
-}
-
-/**
- * Generar mensaje de WhatsApp para recordatorio de 15min
- */
-function generateWhatsAppMessage15min(appointment) {
-  const horaFormateada = formatTimeTo12Hour(appointment.horaCita);
-  
-  return `⏰ *¡Tu cita es AHORA!*
-
-Hola *${appointment.clientName}*,
-
-Tu cita es en *15 minutos*:
-
-⏰ *Hora:* ${horaFormateada}
-👨‍⚕️ *Con:* ${appointment.profesionalName}
-🎟️ *Código:* ${appointment.codigoReserva}
-
-📍 *Dirección:* ${config.business.address}
 
 ¡Te esperamos! 🌟`;
 }
@@ -227,8 +193,6 @@ function formatTimeTo12Hour(timeString) {
 module.exports = {
   sendWhatsAppMessage,
   sendWhatsAppReminder24h,
-  sendWhatsAppReminder15min,
-  generateWhatsAppMessage24h,
-  generateWhatsAppMessage15min
+  generateWhatsAppMessage24h
 };
 

@@ -78,17 +78,17 @@ const config = {
   workingHours: {
     // Forzar horarios específicos (independiente de Google Sheets)
     forceFixedSchedule: process.env.FORCE_FIXED_SCHEDULE === 'true' || process.env.NODE_ENV === 'production',
-    startHour: Math.max(parseInt(process.env.WORKING_START_HOUR) || 10, 10),   // MÍNIMO 10 AM - NUNCA antes
-    endHour: parseInt(process.env.WORKING_END_HOUR) || 19,     // 7 PM  
+    startHour: parseInt(process.env.WORKING_START_HOUR) || 10,   // 10 AM (SI O SI)
+    endHour: parseInt(process.env.WORKING_END_HOUR) || 19,     // 7 PM (SI O SI)
     lunchStartHour: parseInt(process.env.LUNCH_START_HOUR) || 14, // 2 PM
     lunchEndHour: parseInt(process.env.LUNCH_END_HOUR) || 15,     // 3 PM
-    slotIntervalMinutes: parseInt(process.env.SLOT_INTERVAL_MINUTES) || 60, // 1 hora
+    slotIntervalMinutes: parseInt(process.env.SLOT_INTERVAL_MINUTES) || 60, // 1 hora (sesiones de hora por hora)
     
     // Horarios especiales por día de la semana
     saturday: {
       enabled: true,
-      startHour: parseInt(process.env.SATURDAY_START_HOUR) || 10, // 10 AM
-      endHour: parseInt(process.env.SATURDAY_END_HOUR) || 13,     // 1 PM (13:00)
+      startHour: parseInt(process.env.SATURDAY_START_HOUR) || 10, // 10 AM (SI O SI)
+      endHour: parseInt(process.env.SATURDAY_END_HOUR) || 13,     // 1 PM (13:00) (SI O SI)
       hasLunch: false // No hay horario de comida los sábados
     },
     sunday: {

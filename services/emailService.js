@@ -292,7 +292,7 @@ async function sendNewAppointmentNotification(appointmentData) {
             <strong style="color: #f57f17; font-size: 14px;">Recordatorio</strong>
           </div>
           <p style="margin: 8px 0 0; color: #e65100; font-size: 14px; line-height: 1.4;">
-            El cliente recibirá recordatorios automáticos 24h y 2h antes de la cita.
+            El cliente recibirá un recordatorio automático 24h antes de la cita.
           </p>
         </div>
 
@@ -505,6 +505,11 @@ async function sendReminder24h(appointmentData) {
           <p><strong>🎟️ Código de Reserva:</strong> <span style="font-size: 18px; font-weight: bold; color: #d32f2f;">${codigoReserva}</span></p>
         </div>
 
+        <div style="background-color: #e8f5e9; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #4caf50;">
+          <h3 style="color: #2e7d32; margin-top: 0;">✅ Confirma tu asistencia</h3>
+          <p style="margin: 0;">Por favor, confirma tu asistencia respondiendo a este correo o contactándonos por WhatsApp usando tu código de reserva: <strong>${codigoReserva}</strong></p>
+        </div>
+
         <div style="background-color: #fff3e0; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
           <h3 style="color: #ef6c00; margin-top: 0;">⚠️ Importante</h3>
           <ul style="margin: 0; padding-left: 20px;">
@@ -553,89 +558,6 @@ async function sendReminder24h(appointmentData) {
   }
 }
 
-/**
- * Enviar recordatorio de cita (15 minutos antes)
- */
-async function sendReminder15min(appointmentData) {
-  try {
-    if (!transporter) {
-      console.log('📧 Email no configurado - saltando envío');
-      return { success: false, reason: 'SMTP no configurado' };
-    }
-
-    if (!config.smtp.pass || config.smtp.pass.trim() === '') {
-      console.log('⚠️ SMTP_PASS vacío - necesitas configurar App Password de Gmail');
-      return { success: false, reason: 'SMTP_PASS no configurado' };
-    }
-
-    const { 
-      clientName, 
-      clientEmail, 
-      horaCita,
-      profesionalName, 
-      codigoReserva 
-    } = appointmentData;
-
-    const horaFormateada = formatTimeTo12Hour(horaCita);
-
-    const emailContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f8f9fa;">
-      <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-        
-        <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #ff9800; margin: 0;">⏰ ¡Tu cita es AHORA!</h1>
-          <p style="color: #6c757d; margin: 5px 0; font-size: 18px;">Faltan solo 15 minutos</p>
-        </div>
-
-        <div style="background-color: #fff3e0; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
-          <p style="font-size: 16px; margin: 0;"><strong>⏰ Hora de tu cita:</strong> ${horaFormateada}</p>
-          <p style="font-size: 16px; margin: 10px 0 0 0;"><strong>👨‍⚕️ Con:</strong> ${profesionalName}</p>
-          <p style="font-size: 16px; margin: 10px 0 0 0;"><strong>🎟️ Código:</strong> ${codigoReserva}</p>
-        </div>
-
-        <div style="background-color: #ffebee; padding: 15px; border-radius: 8px; text-align: center;">
-          <p style="font-size: 18px; font-weight: bold; color: #d32f2f; margin: 0;">
-            ¡Te esperamos en 15 minutos!
-          </p>
-        </div>
-
-        <div style="text-align: center; margin-top: 30px;">
-          <p style="color: #6c757d; margin: 0;">
-            <strong>${config.business.name}</strong><br>
-            📍 ${config.business.address}
-          </p>
-        </div>
-
-      </div>
-    </div>
-    `;
-
-    const mailOptions = {
-      from: `"${config.business.name}" <${config.smtp.user}>`,
-      to: clientEmail,
-      subject: `🔔 ¡Tu cita es AHORA! - Faltan 15 minutos`,
-      html: emailContent
-    };
-
-    console.log(`📤 Enviando recordatorio 15min a ${clientEmail}...`);
-    const result = await transporter.sendMail(mailOptions);
-    console.log(`✅ Recordatorio 15min enviado exitosamente. MessageId: ${result.messageId}`);
-
-    return { 
-      success: true, 
-      messageId: result.messageId, 
-      to: clientEmail 
-    };
-
-  } catch (error) {
-    console.error('❌ Error enviando recordatorio 15min:', error.message);
-    return { 
-      success: false, 
-      error: error.message 
-    };
-  }
-}
-
 // Inicializar servicio al cargar el módulo
 const emailServiceReady = initializeEmailService();
 
@@ -644,7 +566,6 @@ module.exports = {
   sendNewAppointmentNotification,
   sendRescheduledAppointmentConfirmation,
   sendReminder24h,
-  sendReminder15min,
   emailServiceReady,
   initializeEmailService 
-}; 
+};

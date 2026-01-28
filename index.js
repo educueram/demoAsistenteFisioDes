@@ -13,20 +13,50 @@ const { initializeAuth, getCalendarInstance } = require('./services/googleAuth')
 const { getSheetData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
 const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, generateUniqueReservationCode, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
-const { getUpcomingAppointments24h, getUpcomingAppointments15min, sendEmailReminder24h, sendEmailReminder15min } = require('./services/reminderService');
-const { sendWhatsAppReminder24h, sendWhatsAppReminder15min } = require('./services/whatsappService');
+const { getUpcomingAppointments24h, sendEmailReminder24h } = require('./services/reminderService');
+const { sendWhatsAppReminder24h } = require('./services/whatsappService');
 
 const app = express();
 const PORT = config.server.port;
 
 // Middlewares
 app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? ['https://your-app.railway.app', /railway\.app$/] 
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  origin: function (origin, callback) {
+    // Permitir requests sin origin (Postman, mobile apps, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Lista de orígenes permitidos
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3001',
+      /^https:\/\/.*\.railway\.app$/,
+      /^https:\/\/.*\.vercel\.app$/,
+      /^https:\/\/.*\.netlify\.app$/
+    ];
+    
+    // Verificar si el origin está permitido
+    const isAllowed = allowedOrigins.some(allowedOrigin => {
+      if (typeof allowedOrigin === 'string') {
+        return origin === allowedOrigin;
+      } else if (allowedOrigin instanceof RegExp) {
+        return allowedOrigin.test(origin);
+      }
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.log(`CORS bloqueado para origen: ${origin}`);
+      callback(null, true); // Permitir todos temporalmente para desarrollo
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -45,6 +75,69 @@ try {
 }
 
 // =================================================================
+// 💾 SISTEMA DE ALMACENAMIENTO DE INFORMACIÓN DE PACIENTES
+// =================================================================
+
+// Almacenamiento en memoria de información de pacientes
+// Formato: { phone: { name, email, lastUpdated } }
+const patientCache = new Map();
+
+/**
+ * Normalizar número de teléfono para búsqueda
+ * Convierte +5214495847679 -> 4495847679
+ */
+function normalizePhone(phone) {
+  if (!phone) return '';
+  // Eliminar todos los caracteres no numéricos
+  let cleaned = phone.replace(/\D/g, '');
+  
+  // Si empieza con 521, eliminar el 1 extra
+  if (cleaned.startsWith('521')) {
+    cleaned = '52' + cleaned.substring(3);
+  }
+  // Si empieza con 52, mantenerlo
+  else if (cleaned.startsWith('52')) {
+    cleaned = '52' + cleaned.substring(2);
+  }
+  // Si son 10 dígitos (sin lada), agregar 52
+  else if (cleaned.length === 10) {
+    cleaned = '52' + cleaned;
+  }
+  
+  return cleaned;
+}
+
+/**
+ * Guardar información de paciente en caché
+ */
+function savePatientInfo(phone, name, email) {
+  if (!phone) return;
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedPhone) {
+    patientCache.set(normalizedPhone, {
+      name: name || '',
+      email: email || '',
+      lastUpdated: new Date()
+    });
+    console.log(`💾 Información de paciente guardada: ${normalizedPhone} - ${name}`);
+  }
+}
+
+/**
+ * Obtener información de paciente del caché
+ */
+function getPatientInfo(phone) {
+  if (!phone) return null;
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedPhone && patientCache.has(normalizedPhone)) {
+    const info = patientCache.get(normalizedPhone);
+    console.log(`📋 Información de paciente encontrada en caché: ${normalizedPhone} - ${info.name}`);
+    return info;
+  }
+  return null;
+}
+
+// =================================================================
 // 🛠️ FUNCIONES AUXILIARES MIGRADAS
 // =================================================================
 
@@ -59,9 +152,20 @@ function formatTime(date) {
 
 
 function formatDateToSpanishPremium(date) {
-  // Usar moment con zona horaria de México para todos los cálculos
+  // CORRECCIÓN: Usar moment con zona horaria de México para todos los cálculos
+  // Asegurar que la fecha se parsea correctamente con la zona horaria
   const now = moment().tz(config.timezone.default);
-  const targetDate = moment(date).tz(config.timezone.default);
+  
+  // Asegurar que la fecha se parsea correctamente
+  let targetDate;
+  if (date instanceof Date) {
+    targetDate = moment(date).tz(config.timezone.default);
+  } else if (typeof date === 'string') {
+    // Si es string, parsear con formato YYYY-MM-DD
+    targetDate = moment.tz(date, 'YYYY-MM-DD', config.timezone.default);
+  } else {
+    targetDate = moment(date).tz(config.timezone.default);
+  }
   
   const today = now.clone().startOf('day');
   const tomorrow = today.clone().add(1, 'day');
@@ -87,11 +191,12 @@ function formatDateToSpanishPremium(date) {
     console.log(`   → Resultado: PASADO MAÑANA`);
     return "PASADO MAÑANA";
   } else {
-    const dayName = targetDate.format('dddd');
+    // CORRECCIÓN: Asegurar que el día de la semana se formatea correctamente
+    const dayName = targetDate.clone().tz(config.timezone.default).format('dddd');
     const dayNumber = targetDate.format('D');
     const monthName = targetDate.format('MMMM');
     const result = `${dayName} ${dayNumber} de ${monthName}`;
-    console.log(`   → Resultado: ${result}`);
+    console.log(`   → Resultado: ${result} (fecha original: ${targetDate.format('YYYY-MM-DD')})`);
     return result;
   }
 }
@@ -140,6 +245,13 @@ async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber,
       
       console.log(`   🔍 Evaluando día anterior: ${previousDay.format('YYYY-MM-DD')} (${previousDay.format('dddd')})`);
       
+      // 🚫 PROHIBICIÓN: Saltar domingos
+      const prevDayOfWeek = previousDay.toDate().getDay();
+      if (prevDayOfWeek === 0) {
+        console.log(`   🚫 DOMINGO - Saltando día anterior (domingo)`);
+        continue;
+      }
+      
       if (previousDay.isSameOrAfter(today, 'day')) {
         const prevResult = await checkDayAvailability(previousDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
         
@@ -168,6 +280,14 @@ async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber,
     
     for (let dayOffset = 1; dayOffset <= maxDaysToSearch && alternativeDays.length < 2; dayOffset++) {
       const nextDay = targetMoment.clone().add(dayOffset, 'days');
+      
+      // 🚫 PROHIBICIÓN: Saltar domingos
+      const nextDayOfWeek = nextDay.toDate().getDay();
+      if (nextDayOfWeek === 0) {
+        console.log(`   🚫 DOMINGO - Saltando día posterior (domingo)`);
+        continue;
+      }
+      
       const nextResult = await checkDayAvailability(nextDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
       
       if (nextResult && nextResult.hasAvailability && nextResult.stats.availableSlots >= 1) {
@@ -218,22 +338,48 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, sh
       return null; // No es día laboral
     }
 
-    // Aplicar corrección de horario mínimo 10 AM + incluir horario de comida
+    // CORRECCIÓN: Validar que no sea domingo (prohibido agendar)
     const dayOfWeek = dayMoment.toDate().getDay();
     const isSaturday = dayOfWeek === 6;
     const isSunday = dayOfWeek === 0;
     
-    const correctedHours = {
-      start: Math.max(workingHours.start, 10),
-      end: workingHours.end,
-      dayName: workingHours.dayName
-    };
+    // 🚫 PROHIBICIÓN: No permitir domingos
+    if (isSunday) {
+      console.log(`   🚫 DOMINGO - No se permite agendar domingos`);
+      return null;
+    }
+    
+    // CORRECCIÓN: Horario según el día de la semana
+    let correctedHours;
+    if (isSaturday) {
+      // SÁBADO: Horario especial 10 AM - 1 PM (última sesión: 1 PM - 2 PM)
+      correctedHours = {
+        start: Math.max(workingHours.start, config.workingHours.saturday.startHour || 10),
+        end: Math.min(workingHours.end, config.workingHours.saturday.endHour || 13), // 1 PM (13:00)
+        dayName: workingHours.dayName,
+        hasLunch: false, // Sábados no tienen horario de comida
+        lunchStart: null,
+        lunchEnd: null
+      };
+      console.log(`   📅 SÁBADO - Horario especial: ${correctedHours.start}:00 - ${correctedHours.end}:00 (última sesión: ${correctedHours.end}:00)`);
+    } else {
+      // DÍAS NORMALES: Horario de 10 AM a 7 PM
+      correctedHours = {
+        start: Math.max(workingHours.start, 10), // Mínimo 10 AM
+        end: Math.min(workingHours.end, 19), // Máximo 7 PM (19:00)
+        dayName: workingHours.dayName,
+        hasLunch: true,
+        lunchStart: config.workingHours.lunchStartHour || 14, // 2 PM
+        lunchEnd: config.workingHours.lunchEndHour || 15     // 3 PM
+      };
+    }
 
     console.log(`   ⏰ Horario: ${correctedHours.start}:00 - ${correctedHours.end}:00`);
-    console.log(`   🍽️ Horario comida: Flexible según eventos del calendario`);
+    console.log(`   🍽️ Horario comida: ${correctedHours.hasLunch ? `${correctedHours.lunchStart}:00 - ${correctedHours.lunchEnd}:00` : 'No aplica'}`);
 
-    // Calcular total slots posibles (horario laboral completo)
-    const totalPossibleSlots = correctedHours.end - correctedHours.start;
+    // CORRECCIÓN: Calcular total slots posibles (horario laboral completo)
+    // Incluir el slot de la última hora como última sesión
+    const totalPossibleSlots = correctedHours.end - correctedHours.start + 1;
     
     console.log(`   📊 Total slots posibles: ${totalPossibleSlots} (${correctedHours.start}:00-${correctedHours.end}:00)`);
     
@@ -274,12 +420,15 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, sh
       
       console.log(`   ✅ Día viable: ${availableSlots.length} slots disponibles (fuente: ${dataSource})`);
       
+      // CORRECCIÓN: Usar zona horaria correcta para formatear el día de la semana
+      const dayNameFormatted = dayMoment.clone().tz(config.timezone.default).format('dddd');
+      
       return {
         date: dayMoment.toDate(),
         dateStr: dateStr,
         slots: availableSlots,
         hasAvailability: true,
-        dayName: moment(dayMoment).format('dddd'),
+        dayName: dayNameFormatted, // Usar formato con zona horaria correcta
         dataSource: dataSource,
         stats: {
           totalSlots: totalPossibleSlots,
@@ -338,6 +487,73 @@ function findNextWorkingDay(calendarNumber, startDate, hoursData) {
     console.error('❌ Error buscando siguiente día hábil:', error.message);
     // Fallback: retornar mañana
     return startDate.clone().add(1, 'day').startOf('day');
+  }
+}
+
+// Nueva función: Buscar la próxima fecha disponible con slots disponibles
+async function findNextAvailableDateWithSlots(startDate, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration, maxDaysToSearch = 30) {
+  try {
+    console.log(`🔍 === BUSCANDO PRÓXIMA FECHA DISPONIBLE ===`);
+    console.log(`   - Fecha inicio: ${startDate.format('YYYY-MM-DD')}`);
+    console.log(`   - Máximo días a buscar: ${maxDaysToSearch}`);
+    
+    const today = moment().tz(config.timezone.default).startOf('day');
+    let currentDay = startDate.clone().add(1, 'day').startOf('day');
+    let attempts = 0;
+    
+    while (attempts < maxDaysToSearch) {
+      const jsDay = currentDay.toDate().getDay();
+      
+      // Saltar domingos
+      if (jsDay === 0) {
+        console.log(`   ⏭️ Saltando domingo: ${currentDay.format('YYYY-MM-DD')}`);
+        currentDay.add(1, 'day');
+        attempts++;
+        continue;
+      }
+      
+      // Solo buscar días futuros o de hoy
+      if (currentDay.isBefore(today, 'day')) {
+        currentDay.add(1, 'day');
+        attempts++;
+        continue;
+      }
+      
+      console.log(`   🔍 Evaluando: ${currentDay.format('YYYY-MM-DD')} (${currentDay.format('dddd')})`);
+      
+      try {
+        const dayResult = await checkDayAvailability(currentDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+        
+        if (dayResult && dayResult.hasAvailability && dayResult.slots && dayResult.slots.length > 0) {
+          console.log(`   ✅ Fecha disponible encontrada: ${currentDay.format('YYYY-MM-DD')}`);
+          console.log(`      - Slots disponibles: ${dayResult.slots.length}`);
+          console.log(`      - Primer slot: ${dayResult.slots[0]}`);
+          
+          return {
+            date: dayResult.date,
+            dateStr: dayResult.dateStr,
+            dayName: dayResult.dayName,
+            firstSlot: dayResult.slots[0],
+            totalSlots: dayResult.slots.length,
+            slots: dayResult.slots
+          };
+        } else {
+          console.log(`   ❌ Sin disponibilidad: ${currentDay.format('YYYY-MM-DD')}`);
+        }
+      } catch (dayError) {
+        console.error(`   ⚠️ Error evaluando día ${currentDay.format('YYYY-MM-DD')}:`, dayError.message);
+      }
+      
+      currentDay.add(1, 'day');
+      attempts++;
+    }
+    
+    console.log(`⚠️ No se encontró fecha disponible en ${maxDaysToSearch} días`);
+    return null;
+    
+  } catch (error) {
+    console.error('❌ Error buscando próxima fecha disponible:', error.message);
+    return null;
   }
 }
 
@@ -418,18 +634,12 @@ function mockFindAvailableSlots(calendarId, date, durationMinutes, hours) {
     };
   }
   
-  // HORARIOS NORMALES (Lunes a Viernes)
-  const workingHours = config.workingHours.forceFixedSchedule ? {
-    start: config.workingHours.startHour,
-    end: config.workingHours.endHour,
-    lunchStart: config.workingHours.lunchStartHour,
-    lunchEnd: config.workingHours.lunchEndHour,
-    hasLunch: true
-  } : {
-      start: hours?.start || 10,
-    end: hours?.end || 19,
-    lunchStart: 14,  // 2 PM fijo
-    lunchEnd: 15,    // 3 PM fijo
+  // HORARIOS NORMALES (Lunes a Viernes): SI O SI 10 AM a 7 PM
+  const workingHours = {
+    start: 10,  // FORZADO: Siempre 10 AM
+    end: 19,    // FORZADO: Siempre 7 PM (19:00)
+    lunchStart: config.workingHours.lunchStartHour || 14,  // 2 PM
+    lunchEnd: config.workingHours.lunchEndHour || 15,      // 3 PM
     hasLunch: true
   };
   
@@ -604,10 +814,10 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
 
     console.log(`✅ Calendar ID: ${calendarId}, Service Duration: ${serviceDuration} min`);
     
-    // LÓGICA SIMPLIFICADA: Solo consultar el día solicitado
+    // LÓGICA MEJORADA: Consultar los próximos 4-5 días desde la fecha solicitada
     const today = moment().tz(config.timezone.default).startOf('day');
     
-    console.log(`📅 === CONSULTA SIMPLIFICADA ===`);
+    console.log(`📅 === CONSULTA DE MÚLTIPLES DÍAS ===`);
     console.log(`   - Hoy: ${today.format('YYYY-MM-DD')}`);
     console.log(`   - Fecha solicitada: ${targetMoment.format('YYYY-MM-DD')}`);
     
@@ -618,14 +828,38 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       }));
     }
     
-    // Validar que sea un día laboral (no domingo)
+    // Ajustar fecha de inicio: usar hoy si la fecha solicitada es en el pasado relativo
+    const startDate = targetMoment.isBefore(today, 'day') ? today : targetMoment;
+    
+    // CORRECCIÓN: Si es domingo, buscar próxima fecha disponible y mostrar mensaje
     const jsDay = targetDate.getDay();
     const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
     
     if (jsDay === 0) {
-      return res.json(createJsonResponse({ 
-        respuesta: '🚫 No hay servicio los domingos. Por favor, selecciona otro día de la semana.' 
-      }));
+      console.log(`🚫 DOMINGO detectado - Buscando próxima fecha disponible`);
+      console.log(`🔍 Buscando próxima fecha disponible con slots...`);
+      
+      // Buscar la próxima fecha disponible con slots
+      const nextAvailable = await findNextAvailableDateWithSlots(
+        targetMoment,
+        calendarNumber,
+        serviceNumber,
+        sheetData,
+        calendarId,
+        serviceDuration
+      );
+      
+      if (nextAvailable) {
+        const dayNameFormatted = formatDateToSpanishPremium(nextAvailable.date);
+        const time12h = formatTimeTo12Hour(nextAvailable.firstSlot);
+        return res.json(createJsonResponse({ 
+          respuesta: `😔 Los días domingos no contamos con servicio, puedes consultar el día **${dayNameFormatted}** (${nextAvailable.dateStr}) a las **${time12h}**.\n\n🔍 Esta es la próxima fecha y hora más cercana disponible en el calendario.` 
+        }));
+      } else {
+        return res.json(createJsonResponse({ 
+          respuesta: `😔 Los días domingos no contamos con servicio.\n\n🔍 Por favor, intenta con otra fecha o contacta directamente.` 
+        }));
+      }
     }
     
     const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
@@ -636,12 +870,39 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       }));
     }
     
-    // Solo consultar el día solicitado
-    let datesToCheck = [
-      { date: targetDate, label: 'solicitado', emoji: '📅', priority: 1 }
-    ];
+    // NUEVA LÓGICA: Consultar solo el día solicitado + 2 días más (total 3 días)
+    // Si la fecha solicitada es hoy o en el futuro, empezar desde ahí
+    // Si es en el pasado, empezar desde hoy
+    const datesToCheck = [];
+    const maxDaysToCheck = 5; // Revisar hasta 5 días para obtener 3 días válidos (excluyendo domingos)
+    const totalDaysRequired = 3; // Total: día solicitado + 2 días más
     
-    console.log(`📊 Consultando únicamente: ${targetMoment.format('YYYY-MM-DD')}`);
+    let daysAdded = 0;
+    for (let i = 0; i < maxDaysToCheck && daysAdded < totalDaysRequired; i++) {
+      const checkDate = startDate.clone().add(i, 'days');
+      const jsDay = checkDate.toDate().getDay();
+      
+      // Saltar domingos (día 0)
+      if (jsDay === 0) {
+        continue;
+      }
+      
+      datesToCheck.push({
+        date: checkDate.toDate(),
+        label: i === 0 ? 'solicitado' : 'siguiente',
+        emoji: i === 0 ? '📅' : '📆',
+        priority: daysAdded + 1
+      });
+      daysAdded++;
+    }
+    
+    console.log(`📊 === CONSULTA DE ${datesToCheck.length} DÍAS (DÍA SOLICITADO + 2 MÁS) ===`);
+    console.log(`📅 Fecha inicial: ${startDate.format('YYYY-MM-DD')} (${startDate.format('dddd')})`);
+    console.log(`📅 Días a consultar: ${datesToCheck.length} (solo día solicitado + 2 días más)`);
+    datesToCheck.forEach((day, idx) => {
+      const dayMoment = moment(day.date).tz(config.timezone.default);
+      console.log(`   ${idx + 1}. ${dayMoment.format('YYYY-MM-DD')} (${dayMoment.format('dddd')})`);
+    });
     
     const daysWithSlots = [];
     
@@ -653,34 +914,61 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       
       // Solo procesar días que no sean en el pasado
       if (dayMoment.isSameOrAfter(today, 'day')) {
-        const jsDay = dayInfo.date.getDay();
-        const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-        const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+        try {
+          const jsDay = dayInfo.date.getDay();
+          const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
+          const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
 
-        if (workingHours) {
-          // CORRECCIÓN: Asegurar que nunca se inicie antes de las 10 AM + horario comida
+          if (!workingHours) {
+            console.log(`   ⚠️ No se encontraron horarios laborales para ${dateStr} (día ${sheetDayNumber})`);
+            continue;
+          }
+
+          if (workingHours) {
+          // CORRECCIÓN: Validar que no sea domingo (prohibido agendar)
           const isSaturday = jsDay === 6;
           const isSunday = jsDay === 0;
           
-          const correctedHours = {
-            start: Math.max(workingHours.start, 10), // Mínimo 10 AM
-            end: workingHours.end,
-            dayName: workingHours.dayName
-          };
+          // 🚫 PROHIBICIÓN: No permitir domingos
+          if (isSunday) {
+            console.log(`   🚫 DOMINGO - Saltando día (domingo no permitido)`);
+            continue;
+          }
+          
+          // CORRECCIÓN: Horario según el día de la semana
+          let correctedHours;
+          if (isSaturday) {
+            // SÁBADO: Horario especial 10 AM - 1 PM (última sesión: 1 PM - 2 PM)
+            correctedHours = {
+              start: Math.max(workingHours.start, config.workingHours.saturday.startHour || 10),
+              end: Math.min(workingHours.end, config.workingHours.saturday.endHour || 13), // 1 PM (13:00)
+              dayName: workingHours.dayName
+            };
+            console.log(`   📅 SÁBADO - Horario especial: ${correctedHours.start}:00 - ${correctedHours.end}:00 (última sesión: ${correctedHours.end}:00)`);
+          } else {
+            // DÍAS NORMALES: SI O SI 10 AM a 7 PM
+            correctedHours = {
+              start: 10, // FORZADO: Siempre 10 AM
+              end: 19,   // FORZADO: Siempre 7 PM (19:00)
+              dayName: workingHours.dayName
+            };
+          }
           
           console.log(`📅 Procesando día ${dayInfo.label}: ${dateStr}`);
           console.log(`   - Horario original: ${workingHours.start}:00 - ${workingHours.end}:00`);
           console.log(`   - Horario corregido: ${correctedHours.start}:00 - ${correctedHours.end}:00`);
           console.log(`   - Horario comida: Flexible según eventos del calendario`);
           
-          // Calcular total slots posibles (horario laboral completo)
-          const totalPossibleSlots = correctedHours.end - correctedHours.start;
+          // CORRECCIÓN: Calcular total slots posibles (horario laboral completo)
+          // Incluir el slot de la última hora (7 PM) como última sesión
+          const totalPossibleSlots = correctedHours.end - correctedHours.start + 1;
           
-          console.log(`   📊 Total slots posibles: ${totalPossibleSlots}`);
+          console.log(`   📊 Total slots posibles: ${totalPossibleSlots} (de ${correctedHours.start}:00 a ${correctedHours.end}:00)`);
           
           let availableSlots = [];
           
           try {
+            
             // Intentar usar Google Calendar API real
             const slotResult = await findAvailableSlots(calendarId, dayInfo.date, parseInt(serviceDuration), correctedHours);
             
@@ -690,6 +978,8 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
               availableSlots = slotResult;
             }
           } catch (error) {
+            console.error(`   ❌ ERROR consultando calendar real:`, error.message);
+            console.error(`   Stack:`, error.stack);
             console.log(`⚠️ Error consultando calendar real, usando mock: ${error.message}`);
             const mockResult = mockFindAvailableSlots(calendarId, dayInfo.date, parseInt(serviceDuration), correctedHours);
             
@@ -700,11 +990,25 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
             }
           }
           
+          // CORRECCIÓN CRÍTICA: Validar que el resultado sea válido
+          if (!Array.isArray(availableSlots)) {
+            console.error(`   ⚠️ ADVERTENCIA: availableSlots no es un array, es: ${typeof availableSlots}`);
+            console.error(`   ⚠️ Valor recibido:`, availableSlots);
+            availableSlots = [];
+          }
+          
           const occupiedSlots = totalPossibleSlots - availableSlots.length;
           const occupationPercentage = totalPossibleSlots > 0 ? Math.round((occupiedSlots / totalPossibleSlots) * 100) : 0;
           
           console.log(`   - Total slots posibles: ${totalPossibleSlots}, Disponibles: ${availableSlots.length}, Ocupación: ${occupationPercentage}%`);
           console.log(`   - Slots encontrados: [${availableSlots.join(', ')}]`);
+          
+          // CORRECCIÓN CRÍTICA: Si no hay slots pero debería haber, investigar
+          if (availableSlots.length === 0 && totalPossibleSlots > 0) {
+            console.error(`   ⚠️ ADVERTENCIA: No se encontraron slots disponibles pero hay ${totalPossibleSlots} slots posibles`);
+            console.error(`   ⚠️ Esto puede indicar un problema con la detección de conflictos o con la generación de slots`);
+            console.error(`   ⚠️ Revisar logs anteriores para identificar la causa`);
+          }
           
           if (availableSlots.length > 0) {
             const dayWithSlots = {
@@ -728,6 +1032,14 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
           } else {
             console.log(`   ❌ Día NO agregado: ${dayInfo.label} - availableSlots.length = 0`);
           }
+        } else {
+          console.log(`   ⚠️ No se encontraron horarios laborales para ${dateStr}`);
+        }
+        } catch (dayError) {
+          console.error(`   ❌ Error procesando día ${dateStr}:`, dayError.message);
+          console.error(`   Stack:`, dayError.stack);
+          // Continuar con el siguiente día en lugar de fallar completamente
+          continue;
         }
       }
     }
@@ -739,90 +1051,190 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     });
     
     if (daysWithSlots.length === 0) {
-      // No hay disponibilidad en el día consultado - buscar días alternativos
+      // CORRECCIÓN: Solo buscar el día específico solicitado, NO días alternativos
       console.log(`\n🔍 === NO HAY DISPONIBILIDAD EN ${targetDateStr} ===`);
-      console.log(`🔍 Buscando días alternativos...`);
+      console.log(`📅 Buscando únicamente el día solicitado: ${targetMoment.format('YYYY-MM-DD')} (${targetMoment.format('dddd')})`);
       
-      let alternativeDays = await findAlternativeDaysWithAvailability(
-        targetMoment, 
-        calendarNumber, 
-        serviceNumber, 
-        sheetData
-      );
+      // Verificar el día solicitado específicamente
+      const jsDay = targetDate.getDay();
+      const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
       
-      if (alternativeDays.length === 0) {
-        console.log(`❌ Sin días alternativos encontrados`);
+      // 🚫 PROHIBICIÓN: No permitir domingos
+      if (jsDay === 0) {
+        console.log(`🚫 DOMINGO - No se permite agendar domingos`);
+        console.log(`🔍 Buscando próxima fecha disponible...`);
+        
+        // Buscar la próxima fecha disponible con slots
+        const nextAvailable = await findNextAvailableDateWithSlots(
+          targetMoment,
+          calendarNumber,
+          serviceNumber,
+          sheetData,
+          calendarId,
+          serviceDuration
+        );
+        
+        if (nextAvailable) {
+          const dayNameFormatted = formatDateToSpanishPremium(nextAvailable.date);
+          const time12h = formatTimeTo12Hour(nextAvailable.firstSlot);
+          return res.json(createJsonResponse({ 
+            respuesta: `😔 Los días domingos no contamos con servicio, puedes consultar el día **${dayNameFormatted}** (${nextAvailable.dateStr}) a las **${time12h}**.\n\n🔍 Esta es la próxima fecha y hora más cercana disponible en el calendario.` 
+          }));
+        } else {
+          return res.json(createJsonResponse({ 
+            respuesta: `😔 Los días domingos no contamos con servicio.\n\n🔍 Por favor, intenta con otra fecha o contacta directamente.` 
+          }));
+        }
+      }
+      
+      const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+      
+      if (!workingHours) {
         return res.json(createJsonResponse({ 
-          respuesta: `😔 No hay horarios disponibles para ${formatDateToSpanishPremium(targetDate)} ni en los días cercanos.\n\n🔍 Te sugerimos elegir una fecha más lejana o contactarnos directamente.` 
+          respuesta: `🚫 No hay servicio para ${formatDateToSpanishPremium(targetDate)}. Por favor, elige otra fecha.` 
         }));
       }
       
-      console.log(`\n✅ === DÍAS ALTERNATIVOS ENCONTRADOS ===`);
-      console.log(`Total días alternativos: ${alternativeDays.length}`);
-      alternativeDays.forEach((day, index) => {
-        console.log(`${index + 1}. ${day.dateStr} (${day.dayName}): ${day.stats.availableSlots} slots - ${day.direction} (${day.dataSource})`);
-      });
+      // CORRECCIÓN: Horario según el día de la semana
+      const jsDayForHours = targetDate.getDay();
+      const isSaturdayForHours = jsDayForHours === 6;
       
-      // 🆕 MENSAJE MEJORADO: Claro y específico
-      const originalDayName = formatDateToSpanishPremium(targetDate);
-      let alternativeResponse = `😔 No tengo disponibilidad para *${originalDayName}* (${targetDateStr}), pero sí tengo para estos días:\n\n`;
-      
-      let letterIndex = 0;
-      let dateMapping = {};
-      
-      for (const dayData of alternativeDays) {
-        const dayName = formatDateToSpanishPremium(dayData.date);
-        const occupationEmoji = getOccupationEmoji(dayData.stats.occupationPercentage);
-        
-        
-        // 🎯 Mensaje más claro de distancia
-        let distanceText = '';
-        if (dayData.direction === 'anterior') {
-          if (dayData.distance === 1) {
-            distanceText = '📅 1 día antes';
-          } else {
-            distanceText = `📅 ${dayData.distance} días antes`;
-          }
-        } else {
-          if (dayData.distance === 1) {
-            distanceText = '📅 1 día después';
-          } else {
-            distanceText = `📅 ${dayData.distance} días después`;
-          }
-        }
-        
-        alternativeResponse += `${occupationEmoji} *${dayName.toUpperCase()}* (${dayData.dateStr})\n`;
-        alternativeResponse += `${distanceText} • ${dayData.stats.availableSlots} horarios disponibles\n\n`;
-        
-        const formattedSlots = dayData.slots.map((slot) => {
-          const letterEmoji = getLetterEmoji(letterIndex);
-          const time12h = formatTimeTo12Hour(slot);
-          
-          dateMapping[String.fromCharCode(65 + letterIndex)] = {
-            date: dayData.dateStr,
-            time: slot,
-            dayName: dayName
-          };
-          
-          letterIndex++;
-          return `${letterEmoji} ${time12h}`;
-        }).join('\n');
-        
-        alternativeResponse += formattedSlots + '\n\n';
+      let correctedHours;
+      if (isSaturdayForHours) {
+        // SÁBADO: Horario especial 10 AM - 1 PM (última sesión: 1 PM - 2 PM)
+        correctedHours = {
+          start: Math.max(workingHours.start, config.workingHours.saturday.startHour || 10),
+          end: Math.min(workingHours.end, config.workingHours.saturday.endHour || 13), // 1 PM (13:00)
+          dayName: workingHours.dayName
+        };
+        console.log(`   📅 SÁBADO - Horario especial: ${correctedHours.start}:00 - ${correctedHours.end}:00 (última sesión: ${correctedHours.end}:00)`);
+      } else {
+        // DÍAS NORMALES: SI O SI 10 AM a 7 PM
+        correctedHours = {
+          start: 10, // FORZADO: Siempre 10 AM
+          end: 19,   // FORZADO: Siempre 7 PM (19:00)
+          dayName: workingHours.dayName
+        };
       }
       
-      alternativeResponse += `💡 Escribe la letra del horario que prefieras (A, B, C...) ✈️`;
-      
-      return res.json(createJsonResponse({ 
-        respuesta: alternativeResponse,
-        metadata: {
-          originalDate: targetDateStr,
-          alternativeDaysFound: alternativeDays.length,
-          totalAlternativeSlots: alternativeDays.reduce((sum, day) => sum + day.stats.availableSlots, 0),
-          dateMapping: dateMapping,
-          isAlternativeSearch: true
+        // Intentar obtener slots del día específico
+      try {
+        const slotResult = await findAvailableSlots(calendarId, targetDate, parseInt(serviceDuration), correctedHours);
+        
+        let availableSlots = [];
+        if (typeof slotResult === 'object' && slotResult.slots !== undefined) {
+          availableSlots = slotResult.slots;
+        } else if (Array.isArray(slotResult)) {
+          availableSlots = slotResult;
+        } else {
+          console.warn(`⚠️ Resultado inesperado de findAvailableSlots:`, typeof slotResult);
+          console.warn(`⚠️ Valor recibido:`, slotResult);
+          availableSlots = [];
         }
-      }));
+        
+        // CORRECCIÓN CRÍTICA: Validar que el resultado sea válido
+        if (!Array.isArray(availableSlots)) {
+          console.error(`   ⚠️ ADVERTENCIA: availableSlots no es un array, es: ${typeof availableSlots}`);
+          console.error(`   ⚠️ Valor recibido:`, availableSlots);
+          availableSlots = [];
+        }
+        
+        const totalPossibleSlotsFallback = correctedHours.end - correctedHours.start + 1;
+        
+        // CORRECCIÓN CRÍTICA: Si no hay slots pero debería haber, investigar antes de retornar error
+        if (availableSlots.length === 0 && totalPossibleSlotsFallback > 0) {
+          console.error(`\n⚠️ === ADVERTENCIA CRÍTICA: NO SE ENCONTRARON SLOTS PARA ${targetDateStr} ===`);
+          console.error(`   📋 Total slots posibles: ${totalPossibleSlotsFallback}`);
+          console.error(`   📋 Horario: ${correctedHours.start}:00 - ${correctedHours.end}:00`);
+          console.error(`   📋 Slots encontrados: ${availableSlots.length}`);
+          console.error(`   ⚠️ Esto puede indicar un problema con la detección de conflictos o con la generación de slots`);
+          console.error(`   ⚠️ Revisar logs anteriores para identificar la causa`);
+          console.error(`   ⚠️ NO se retornará error inmediatamente - se intentará regenerar`);
+          
+          // Intentar una segunda vez con logging más detallado
+          try {
+            console.log(`   🔄 Intentando regenerar slots con logging detallado...`);
+            const retryResult = await findAvailableSlots(calendarId, targetDate, parseInt(serviceDuration), correctedHours);
+            
+            let retrySlots = [];
+            if (typeof retryResult === 'object' && retryResult.slots !== undefined) {
+              retrySlots = retryResult.slots;
+            } else if (Array.isArray(retryResult)) {
+              retrySlots = retryResult;
+            }
+            
+            if (retrySlots.length > 0) {
+              console.log(`   ✅ Reintento exitoso: ${retrySlots.length} slots encontrados`);
+              availableSlots = retrySlots;
+            } else {
+              console.error(`   ❌ Reintento también falló - no se encontraron slots`);
+            }
+          } catch (retryError) {
+            console.error(`   ❌ Error en reintento:`, retryError.message);
+          }
+        }
+        
+        if (availableSlots.length === 0) {
+          const dayName = formatDateToSpanishPremium(targetDate);
+          console.error(`   ❌ Finalmente no hay slots disponibles para ${targetDateStr}`);
+          console.log(`🔍 Día sin disponibilidad - Buscando próxima fecha disponible...`);
+          
+          // Buscar la próxima fecha disponible con slots
+          const nextAvailable = await findNextAvailableDateWithSlots(
+            targetMoment,
+            calendarNumber,
+            serviceNumber,
+            sheetData,
+            calendarId,
+            serviceDuration
+          );
+          
+          if (nextAvailable) {
+            const nextDayNameFormatted = formatDateToSpanishPremium(nextAvailable.date);
+            const time12h = formatTimeTo12Hour(nextAvailable.firstSlot);
+            return res.json(createJsonResponse({ 
+              respuesta: `😔 No tengo horarios disponibles para *${dayName}* (${targetDateStr}).\n\n🔍 Te recomiendo el día **${nextDayNameFormatted}** (${nextAvailable.dateStr}) a las **${time12h}**.\n\n📅 Esta es la próxima fecha y hora más cercana disponible en el calendario.` 
+            }));
+          } else {
+            return res.json(createJsonResponse({ 
+              respuesta: `😔 No tengo horarios disponibles para *${dayName}* (${targetDateStr}).\n\n🔍 Te sugerimos elegir otra fecha o contactarnos directamente.` 
+            }));
+          }
+        }
+        
+        // Si hay slots disponibles, agregarlos a daysWithSlots
+        const totalPossibleSlots = correctedHours.end - correctedHours.start + 1;
+        const dayWithSlots = {
+          date: targetDate,
+          dateStr: targetDateStr,
+          slots: availableSlots,
+          label: 'solicitado',
+          emoji: '📅',
+          priority: 1,
+          stats: {
+            totalSlots: totalPossibleSlots,
+            availableSlots: availableSlots.length,
+            occupiedSlots: totalPossibleSlots - availableSlots.length,
+            occupationPercentage: totalPossibleSlots > 0 ? Math.round(((totalPossibleSlots - availableSlots.length) / totalPossibleSlots) * 100) : 0
+          }
+        };
+        
+        daysWithSlots.push(dayWithSlots);
+        console.log(`✅ Día solicitado agregado con ${availableSlots.length} slots disponibles`);
+      } catch (error) {
+        console.error(`⚠️ Error consultando disponibilidad para ${targetDateStr}:`, error.message);
+        console.error(`   Stack:`, error.stack);
+        try {
+          const dayName = formatDateToSpanishPremium(targetDate);
+          return res.json(createJsonResponse({ 
+            respuesta: `😔 No pude consultar los horarios disponibles para *${dayName}* (${targetDateStr}).\n\n🔍 Te sugerimos elegir otra fecha o contactarnos directamente.` 
+          }));
+        } catch (formatError) {
+          return res.json(createJsonResponse({ 
+            respuesta: `😔 No pude consultar los horarios disponibles para ${targetDateStr}.\n\n🔍 Te sugerimos elegir otra fecha o contactarnos directamente.` 
+          }));
+        }
+      }
     }
     
     daysWithSlots.sort((a, b) => a.priority - b.priority);
@@ -838,25 +1250,36 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     let letterIndex = 0;
     let dateMapping = {};
     
+    // Formatear mensaje con todos los días en formato compacto
     for (const dayData of daysWithSlots) {
-      const dayName = formatDateToSpanishPremium(dayData.date);
-      const occupationEmoji = getOccupationEmoji(dayData.stats.occupationPercentage);
-      const urgencyText = getUrgencyText(dayData.stats.occupationPercentage);
+      // CORRECCIÓN: Asegurar que se use la fecha correcta con zona horaria
+      const dayMoment = moment(dayData.date).tz(config.timezone.default);
+      const dayName = formatDateToSpanishPremium(dayMoment.toDate());
       
-      responseText += `${dayData.emoji} *${dayName.toUpperCase()}* (${dayData.dateStr})\n\n`;
+      // CORRECCIÓN: Usar fecha formateada correctamente
+      const correctDateStr = dayMoment.format('YYYY-MM-DD');
+      
+      // Formato mejorado: Día y número del día
+      // Ejemplo: "Lunes 15" o "Martes 16"
+      const dayNumber = dayMoment.format('D');
+      const dayOfWeek = dayMoment.format('dddd');
+      
+      // Formato: "Lunes 15" (sin asteriscos para que se vea más limpio)
+      responseText += `${dayOfWeek.charAt(0).toUpperCase() + dayOfWeek.slice(1)} ${dayNumber}\n`;
       
       const formattedSlots = dayData.slots.map((slot) => {
-        const letterEmoji = getLetterEmoji(letterIndex);
+        const letter = String.fromCharCode(65 + letterIndex); // A, B, C, etc.
         const time12h = formatTimeTo12Hour(slot);
         
-        dateMapping[String.fromCharCode(65 + letterIndex)] = {
-          date: dayData.dateStr,
+        dateMapping[letter] = {
+          date: correctDateStr, // Usar fecha corregida
           time: slot,
           dayName: dayName
         };
         
         letterIndex++;
-        return `${letterEmoji} ${time12h}`;
+        // Formato: "A 12:00" o "B 1:00 PM"
+        return `${letter} ${time12h}`;
       }).join('\n');
       
       responseText += formattedSlots + '\n\n';
@@ -898,7 +1321,88 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     }));
 
   } catch (error) {
-    console.log(error.stack);
+    console.error('❌ === ERROR EN CONSULTA DISPONIBILIDAD ===');
+    console.error('Error message:', error.message);
+    console.error('Error stack:', error.stack);
+    console.error('Fecha solicitada:', req.query?.date);
+    console.error('Servicio:', req.query?.service);
+    
+    // Intentar retornar un mensaje más específico si es posible
+    try {
+      const targetDateStr = req.query?.date;
+      if (targetDateStr) {
+        const targetMoment = moment.tz(targetDateStr, 'YYYY-MM-DD', config.timezone.default);
+        if (targetMoment.isValid()) {
+          const jsDay = targetMoment.toDate().getDay();
+          const dayName = formatDateToSpanishPremium(targetMoment.toDate());
+          
+          // Si es domingo, buscar próxima fecha disponible
+          if (jsDay === 0) {
+            try {
+              const sheetData = await getSheetData();
+              const calendarId = findData('1', sheetData.calendars, 0, 1);
+              const serviceDuration = findData(req.query?.service || '1', sheetData.services, 0, 1);
+              
+              const nextAvailable = await findNextAvailableDateWithSlots(
+                targetMoment,
+                '1',
+                req.query?.service || '1',
+                sheetData,
+                calendarId,
+                serviceDuration
+              );
+              
+              if (nextAvailable) {
+                const nextDayNameFormatted = formatDateToSpanishPremium(nextAvailable.date);
+                const time12h = formatTimeTo12Hour(nextAvailable.firstSlot);
+                return res.json(createJsonResponse({ 
+                  respuesta: `😔 Los días domingos no contamos con servicio, puedes consultar el día **${nextDayNameFormatted}** (${nextAvailable.dateStr}) a las **${time12h}**.\n\n🔍 Esta es la próxima fecha y hora más cercana disponible en el calendario.` 
+                }));
+              }
+            } catch (searchError) {
+              console.error('Error buscando próxima fecha disponible:', searchError.message);
+            }
+            
+            return res.json(createJsonResponse({ 
+              respuesta: `😔 Los días domingos no contamos con servicio.\n\n🔍 Por favor, intenta con otra fecha o contacta directamente.` 
+            }));
+          }
+          
+          // Para otros días, intentar buscar próxima fecha disponible
+          try {
+            const sheetData = await getSheetData();
+            const calendarId = findData('1', sheetData.calendars, 0, 1);
+            const serviceDuration = findData(req.query?.service || '1', sheetData.services, 0, 1);
+            
+            const nextAvailable = await findNextAvailableDateWithSlots(
+              targetMoment,
+              '1',
+              req.query?.service || '1',
+              sheetData,
+              calendarId,
+              serviceDuration
+            );
+            
+            if (nextAvailable) {
+              const nextDayNameFormatted = formatDateToSpanishPremium(nextAvailable.date);
+              const time12h = formatTimeTo12Hour(nextAvailable.firstSlot);
+              return res.json(createJsonResponse({ 
+                respuesta: `😔 No pude consultar la disponibilidad para *${dayName}* (${targetDateStr}).\n\n🔍 Te recomiendo el día **${nextDayNameFormatted}** (${nextAvailable.dateStr}) a las **${time12h}**.\n\n📅 Esta es la próxima fecha y hora más cercana disponible en el calendario.` 
+              }));
+            }
+          } catch (searchError) {
+            console.error('Error buscando próxima fecha disponible:', searchError.message);
+          }
+          
+          return res.json(createJsonResponse({ 
+            respuesta: `😔 No pude consultar la disponibilidad para *${dayName}* (${targetDateStr}).\n\n🔍 Por favor, intenta con otra fecha o contacta directamente.` 
+          }));
+        }
+      }
+    } catch (formatError) {
+      console.error('Error al formatear fecha en catch:', formatError.message);
+    }
+    
     return res.json(createJsonResponse({ 
       respuesta: '🤖 Ha ocurrido un error inesperado al consultar la disponibilidad.' 
     }));
@@ -913,18 +1417,26 @@ app.post('/api/cancela-cita', async (req, res) => {
     console.log('🗑️ === INICIO CANCELACIÓN ORIGINAL ===');
     console.log('Body recibido:', JSON.stringify(req.body, null, 2));
     
-    const { action, calendar: calendarNumber, eventId: codigoReserva } = req.body;
+    const {
+      action,
+      calendar: calendarNumberRaw,
+      eventId,
+      codigo_reserva,
+      codigoReserva
+    } = req.body;
+    const codigoReservaFinal = (eventId || codigo_reserva || codigoReserva || '').toString().trim();
+    const calendarNumber = (calendarNumberRaw || '1').toString().trim();
 
     // Validar parámetros
     if (!action || action !== 'cancel') {
       return res.json({ respuesta: '⚠️ Error: Se requiere action: "cancel"' });
     }
 
-    if (!calendarNumber || !codigoReserva) {
-      return res.json({ respuesta: '⚠️ Error de cancelación: Faltan datos (calendar, eventId).' });
+    if (!codigoReservaFinal) {
+      return res.json({ respuesta: '⚠️ Error de cancelación: Falta el código de reserva (eventId/codigo_reserva).' });
     }
 
-    console.log(`📊 Parámetros: calendar=${calendarNumber}, código=${codigoReserva}`);
+    console.log(`📊 Parámetros: calendar=${calendarNumber}, código=${codigoReservaFinal}`);
 
     // Obtener datos de configuración
     let sheetData;
@@ -946,13 +1458,13 @@ app.post('/api/cancela-cita', async (req, res) => {
     console.log(`📅 Calendar ID: ${calendarId}`);
 
     // USAR LÓGICA ORIGINAL: Cancelar por código de evento
-    const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigoReserva);
+    const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigoReservaFinal);
     
     if (cancelResult.success) {
       // Actualizar estado en Google Sheets
       try {
-        await updateClientStatus(codigoReserva, 'CANCELADA');
-        console.log(`✅ Estado actualizado en Google Sheets: ${codigoReserva} -> CANCELADA`);
+        await updateClientStatus(codigoReservaFinal, 'CANCELADA');
+        console.log(`✅ Estado actualizado en Google Sheets: ${codigoReservaFinal} -> CANCELADA`);
       } catch (updateError) {
         console.error('❌ Error actualizando Google Sheets:', updateError.message);
         // No fallar la cancelación por este error
@@ -1051,6 +1563,13 @@ app.post('/api/reagenda-cita', async (req, res) => {
       console.log('❌ ERROR: Formato de fecha/hora inválido');
       return res.json({ 
         respuesta: '⚠️ Error: Formato de fecha u hora inválido. Usa formato YYYY-MM-DD para fecha y HH:MM para hora.' 
+      });
+    }
+
+    if (startTimeMoment.minute() !== 0) {
+      console.log('❌ ERROR: Horario con minutos no permitidos');
+      return res.json({ 
+        respuesta: '⚠️ Solo se permiten horarios en punto (por ejemplo: 10:00, 11:00, 12:00). Por favor elige una hora completa.'
       });
     }
 
@@ -1310,28 +1829,10 @@ app.post('/api/confirma-cita', async (req, res) => {
     }
 
     // PASO 5: Preparar respuesta con confirmación
-    const fechaFormateada = moment.tz(clientData.date, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
-    const horaFormateada = formatTimeTo12Hour(clientData.time);
-
     const finalResponse = {
-      respuesta: `✅ ¡Cita confirmada exitosamente! 🎉
+      respuesta: `✅ ¡Tu asistencia ha sido confirmada! 🎉
 
-📅 Detalles de tu cita:
-• Fecha: ${fechaFormateada}
-• Hora: ${horaFormateada}
-• Cliente: ${clientData.clientName}
-• Servicio: ${clientData.serviceName}
-• Especialista: ${clientData.profesionalName}
-
-🎟️ Código de reserva: ${codigo_reserva.toUpperCase()}
-
-⚠️ Recuerda:
-• Llega 10 minutos antes
-• Trae tu código de reserva
-
-📍 ${config.business.address}
-
-¡Te esperamos! 🌟`
+Nos alegra saber que nos visitarás pronto. ¡Te esperamos en tu sesión! 🌟`
     };
 
     console.log('🎉 === CONFIRMACIÓN EXITOSA ===');
@@ -1572,6 +2073,542 @@ app.get('/api/consulta-fecha-actual', (req, res) => {
 });
 
 /**
+ * ENDPOINT: Reconocer cliente (reconocimiento silencioso)
+ * Verifica si un teléfono existe en la base de datos sin revelar el proceso
+ */
+app.post('/api/reconocer-cliente', async (req, res) => {
+  try {
+    console.log('🔍 === RECONOCIMIENTO SILENCIOSO DE CLIENTE ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+
+    const { telefono } = req.body;
+
+    if (!telefono) {
+      return res.json({
+        success: false,
+        existeCliente: false,
+        datosCliente: null,
+        error: 'Teléfono no proporcionado'
+      });
+    }
+
+    console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
+
+    // Buscar en Google Sheets (la función ya normaliza el número)
+    const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
+    
+    console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
+
+    if (pacientesEncontrados && pacientesEncontrados.length > 0) {
+      const pacienteMasReciente = pacientesEncontrados[0];
+      
+      console.log('✅ Cliente existente reconocido silenciosamente');
+      console.log(`   - Nombre: ${pacienteMasReciente.nombreCompleto}`);
+      console.log(`   - Email: ${pacienteMasReciente.correoElectronico}`);
+      
+      // Guardar en caché para uso futuro
+      savePatientInfo(telefono, pacienteMasReciente.nombreCompleto, pacienteMasReciente.correoElectronico);
+      
+      return res.json({
+        success: true,
+        existeCliente: true,
+        datosCliente: {
+          nombreCompleto: pacienteMasReciente.nombreCompleto,
+          correoElectronico: pacienteMasReciente.correoElectronico,
+          telefono: pacienteMasReciente.telefono || telefono
+        }
+      });
+    } else {
+      console.log('⚠️ Cliente nuevo no encontrado en la base de datos');
+      
+      return res.json({
+        success: true,
+        existeCliente: false,
+        datosCliente: null
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error en reconocimiento de cliente:', error.message);
+    return res.json({
+      success: false,
+      existeCliente: false,
+      datosCliente: null,
+      error: error.message
+    });
+  }
+});
+
+/**
+ * ENDPOINT: Verificar cliente recurrente
+ */
+app.post('/api/verificar-cliente', async (req, res) => {
+  try {
+    console.log('🔍 === VERIFICACIÓN DE CLIENTE RECURRENTE ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+
+    const { telefono } = req.body;
+
+    if (!telefono) {
+      return res.json({
+        success: false,
+        error: 'Teléfono no proporcionado',
+        pacientes: []
+      });
+    }
+
+    console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
+
+    // Buscar en Google Sheets (la función ya normaliza el número)
+    const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
+    
+    console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
+
+    return res.json({
+      success: true,
+      pacientes: pacientesEncontrados,
+      cantidad: pacientesEncontrados.length
+    });
+
+  } catch (error) {
+    console.error('❌ Error verificando cliente:', error.message);
+    return res.json({
+      success: false,
+      error: error.message,
+      pacientes: []
+    });
+  }
+});
+
+/**
+ * ENDPOINT GET: Verificar que el endpoint está disponible
+ */
+app.get('/api/verificar-cliente-seleccion-hora', (req, res) => {
+  return res.json({
+    success: true,
+    message: 'Endpoint disponible. Usa POST para verificar cliente.',
+    metodo: 'POST',
+    ejemplo: {
+      telefono: '+5214495847679',
+      horaSeleccionada: '10:00 AM',
+      fechaSeleccionada: 'lunes 25 de enero',
+      servicio: 'Consulta presencial'
+    }
+  });
+});
+
+/**
+ * ENDPOINT: Verificar cliente después de seleccionar hora
+ * Detecta si es recurrente o nuevo y genera el mensaje apropiado
+ */
+app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
+  try {
+    console.log('🔍 === VERIFICACIÓN DE CLIENTE DESPUÉS DE SELECCIÓN DE HORA ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+
+    const { telefono, horaSeleccionada, fechaSeleccionada, servicio } = req.body;
+
+    if (!telefono) {
+      return res.json({
+        success: false,
+        error: 'Teléfono no proporcionado',
+        tipoCliente: 'desconocido'
+      });
+    }
+
+    console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
+    console.log(`⏰ Hora seleccionada: ${horaSeleccionada}`);
+    console.log(`📅 Fecha seleccionada: ${fechaSeleccionada}`);
+
+    // Buscar en Google Sheets
+    const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
+    
+    console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
+
+    if (pacientesEncontrados && pacientesEncontrados.length > 0) {
+      const pacienteMasReciente = pacientesEncontrados[0];
+      
+      console.log('✅ Cliente recurrente detectado');
+      console.log(`   - Nombre: ${pacienteMasReciente.nombreCompleto}`);
+      console.log(`   - Email: ${pacienteMasReciente.correoElectronico}`);
+      
+      // Mensaje para cliente recurrente - más directo y claro
+      const mensajeRecurrente = `¡Perfecto! Elegiste las ${horaSeleccionada} del ${fechaSeleccionada} 👍
+
+Encontramos tus datos en nuestro sistema:
+• Nombre: ${pacienteMasReciente.nombreCompleto}
+• Correo: ${pacienteMasReciente.correoElectronico || 'No registrado'}
+
+¿Usamos estos mismos datos para agendar tu cita? Responde 'sí' para confirmar 😊`;
+
+      return res.json({
+        success: true,
+        tipoCliente: 'recurrente',
+        datosCliente: {
+          nombreCompleto: pacienteMasReciente.nombreCompleto,
+          correoElectronico: pacienteMasReciente.correoElectronico,
+          telefono: pacienteMasReciente.telefono || telefono
+        },
+        mensaje: mensajeRecurrente,
+        requiereDatosAdicionales: false,
+        puedeAgendarDirectamente: true
+      });
+      
+    } else {
+      console.log('⚠️ Cliente nuevo detectado');
+      
+      // Mensaje para cliente nuevo
+      const mensajeNuevo = `¡Perfecto! Elegiste las ${horaSeleccionada} del ${fechaSeleccionada} 👍
+
+¿Me puedes decir tu nombre para la reserva? 😊`;
+
+      return res.json({
+        success: true,
+        tipoCliente: 'nuevo',
+        datosCliente: null,
+        mensaje: mensajeNuevo,
+        requiereDatosAdicionales: true
+      });
+    }
+
+  } catch (error) {
+    console.error('❌ Error en verificación de cliente:', error.message);
+    return res.json({
+      success: false,
+      error: error.message,
+      tipoCliente: 'desconocido',
+      mensaje: 'Ocurrió un error al verificar tus datos. Por favor, proporciona tu nombre para continuar 😊'
+    });
+  }
+});
+
+/**
+ * ENDPOINT: Agendar cita con reconocimiento inteligente
+ * Reconoce clientes existentes y no pide datos que ya tiene
+ */
+app.post('/api/agenda-cita-inteligente', async (req, res) => {
+  try {
+    console.log('📝 === INICIO AGENDAMIENTO INTELIGENTE ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+    console.log('Timestamp:', new Date().toISOString());
+
+    const { 
+      action, 
+      calendar: calendarNumber, 
+      service: serviceNumber, 
+      serviceName: serviceNameFromBot, 
+      date, 
+      time, 
+      clientPhone: clientPhoneFromRequest,
+      clientName: clientNameFromRequest,
+      clientEmail: clientEmailFromRequest
+    } = req.body;
+
+    // PASO 0: RECONOCIMIENTO INTELIGENTE DEL CLIENTE
+    let clientName = clientNameFromRequest;
+    let clientEmail = clientEmailFromRequest;
+    let clientPhone = clientPhoneFromRequest;
+    let esClienteExistente = false;
+    
+    if (clientPhone && clientPhone !== 'Sin Teléfono') {
+      console.log('🔍 === RECONOCIENDO CLIENTE ===');
+      
+      try {
+        const pacientesEncontrados = await consultaDatosPacientePorTelefono(clientPhone);
+        
+        if (pacientesEncontrados && pacientesEncontrados.length > 0) {
+          const pacienteMasReciente = pacientesEncontrados[0];
+          esClienteExistente = true;
+          
+          console.log('✅ Cliente existente reconocido');
+          console.log(`   - Nombre: ${pacienteMasReciente.nombreCompleto}`);
+          console.log(`   - Email: ${pacienteMasReciente.correoElectronico}`);
+          
+          // Usar datos existentes si no se proporcionaron nuevos
+          if (!clientName || clientName === '') {
+            clientName = pacienteMasReciente.nombreCompleto;
+            console.log('   → Usando nombre existente');
+          }
+          
+          if (!clientEmail || clientEmail === 'Sin Email' || clientEmail === '') {
+            clientEmail = pacienteMasReciente.correoElectronico;
+            console.log('   → Usando email existente');
+          }
+          
+          // Guardar en caché
+          savePatientInfo(clientPhone, clientName, clientEmail);
+        } else {
+          console.log('⚠️ Cliente nuevo, se solicitarán todos los datos');
+        }
+      } catch (error) {
+        console.error('❌ Error en reconocimiento:', error.message);
+      }
+    }
+
+    // PASO 1: VALIDACIONES BÁSICAS
+    if (!action || !calendarNumber || !serviceNumber || !date || !time) {
+      return res.json({
+        success: false,
+        error: 'Faltan datos requeridos para agendar',
+        requiresData: !esClienteExistente,
+        message: esClienteExistente 
+          ? 'Por favor confirma los datos para tu cita'
+          : 'Por favor proporciona tu nombre y correo para agendar'
+      });
+    }
+
+    // PASO 2: OBTENER CONFIGURACIÓN (lógica original)
+    let sheetData;
+    try {
+      sheetData = await getSheetData();
+      console.log('✅ Configuración obtenida correctamente');
+    } catch (error) {
+      console.error('❌ Error obteniendo configuración:', error.message);
+      return res.json({
+        success: false,
+        error: 'Error obteniendo configuración: ' + error.message,
+        requiresData: !esClienteExistente
+      });
+    }
+
+    console.log('=== BÚSQUEDA EN SHEETS ===');
+    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    console.log('calendarId encontrado:', calendarId);
+    if (!calendarId) {
+      console.log(`❌ ERROR: Calendario no encontrado para número: ${calendarNumber}`);
+      return res.json({
+        success: false,
+        error: 'El calendario solicitado no fue encontrado',
+        requiresData: !esClienteExistente
+      });
+    }
+
+    const profesionalName = findData(calendarNumber, sheetData.calendars, 0, 2);
+    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
+
+    // Obtener nombre del servicio (lógica original)
+    let serviceName = serviceNameFromBot;
+    if (!serviceName) {
+      const serviceMap = {
+        1: 'Consulta de valoración',
+        2: 'Cita de seguimiento'
+      };
+      serviceName = serviceMap[serviceNumber] || 'Servicio Desconocido';
+      console.log('⚠️ Bot no envió serviceName, usando mapeo backup:', serviceName);
+    } else {
+      console.log('✅ Bot envió serviceName:', serviceName);
+    }
+
+    if (!serviceDuration) {
+      console.log(`❌ ERROR: Servicio no encontrado para número: ${serviceNumber}`);
+      return res.json({
+        success: false,
+        error: 'El servicio solicitado no fue encontrado',
+        requiresData: !esClienteExistente
+      });
+    }
+
+    console.log(`✅ Calendar ID: ${calendarId}, Service Duration: ${serviceDuration} min, Service: ${serviceName}`);
+
+    // PASO 4: VERIFICAR DISPONIBILIDAD DEL HORARIO
+    console.log('=== VERIFICANDO DISPONIBILIDAD DEL HORARIO ===');
+    
+    try {
+      // Parsear la fecha y hora para verificar disponibilidad
+      const appointmentDateTime = moment.tz(`${date} ${time}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
+
+    if (appointmentDateTime.minute() !== 0) {
+      console.log('❌ ERROR: Horario con minutos no permitidos');
+      return res.json({
+        success: false,
+        error: 'Solo se permiten horarios en punto (por ejemplo: 10:00, 11:00, 12:00).',
+        requiresData: !esClienteExistente
+      });
+    }
+      
+      // Obtener horarios laborales para ese día
+      const dayOfWeek = appointmentDateTime.day(); // 0 = Domingo, 1 = Lunes, etc.
+    if (dayOfWeek === 0) {
+      console.log('🚫 DOMINGO - No hay servicio');
+      return res.json({
+        success: false,
+        error: 'No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).',
+        requiresData: !esClienteExistente
+      });
+    }
+      const sheetDay = (dayOfWeek === 0) ? 7 : dayOfWeek; // Convertir domingo de 0 a 7
+      const workingHours = findWorkingHours(calendarNumber, sheetDay, sheetData.hours);
+      
+      if (!workingHours) {
+        console.log(`❌ ERROR: No hay horarios laborales para el día ${sheetDay}`);
+        return res.json({
+          success: false,
+          error: 'No hay horarios laborales para el día seleccionado',
+          requiresData: !esClienteExistente
+        });
+      }
+
+      // Verificar si el horario solicitado está dentro del rango laboral
+      const requestedHour = parseInt(time.split(':')[0]);
+      if (requestedHour < workingHours.start || requestedHour >= workingHours.end) {
+        console.log(`❌ ERROR: Horario solicitado (${requestedHour}) fuera de rango laboral (${workingHours.start}-${workingHours.end})`);
+        return res.json({
+          success: false,
+          error: `El horario solicitado no está dentro del horario laboral (${workingHours.start}:00 - ${workingHours.end}:00)`,
+          requiresData: !esClienteExistente
+        });
+      }
+
+      // Verificar disponibilidad real en Google Calendar
+      const availableSlots = await findAvailableSlots(calendarId, appointmentDateTime.toDate(), parseInt(serviceDuration), workingHours);
+      
+      if (!availableSlots.includes(time)) {
+        console.log(`❌ ERROR: Horario ${time} no disponible`);
+        console.log(`   Slots disponibles: [${availableSlots.join(', ')}]`);
+        return res.json({
+          success: false,
+          error: `El horario ${time} ya no está disponible. Horarios disponibles: ${availableSlots.join(', ')}`,
+          requiresData: !esClienteExistente
+        });
+      }
+
+      console.log(`✅ Horario ${time} disponible para agendar`);
+
+    } catch (availabilityError) {
+      console.error('❌ Error verificando disponibilidad:', availabilityError.message);
+      return res.json({
+        success: false,
+        error: 'Error verificando disponibilidad: ' + availabilityError.message,
+        requiresData: !esClienteExistente
+      });
+    }
+
+    // PASO 5: CREAR EVENTO EN GOOGLE CALENDAR
+    console.log('=== CREANDO EVENTO EN GOOGLE CALENDAR ===');
+    let eventId;
+    let reservationCode;
+    
+    try {
+      // Generar código de reserva único
+      reservationCode = generateUniqueReservationCode();
+      console.log(`🎟️ Código de reserva generado: ${reservationCode}`);
+      
+      // Crear evento en Google Calendar
+      const eventResult = await createEventOriginal(
+        calendarId,
+        date,
+        time,
+        parseInt(serviceDuration),
+        clientName,
+        clientPhone,
+        clientEmail,
+        serviceName,
+        reservationCode
+      );
+      
+      eventId = eventResult.eventId;
+      console.log(`✅ Evento creado en Google Calendar con ID: ${eventId}`);
+
+    } catch (calendarError) {
+      console.error('❌ Error creando evento en Google Calendar:', calendarError.message);
+      return res.json({
+        success: false,
+        error: 'Error creando evento en calendario: ' + calendarError.message,
+        requiresData: !esClienteExistente
+      });
+    }
+
+    // PASO 6: GUARDAR EN GOOGLE SHEETS
+    console.log('=== GUARDANDO DATOS EN GOOGLE SHEETS ===');
+    
+    try {
+      await saveClientDataOriginal(
+        clientName,
+        clientPhone,
+        clientEmail,
+        date,
+        time,
+        serviceName,
+        profesionalName,
+        reservationCode,
+        eventId,
+        calendarId
+      );
+      console.log('✅ Datos guardados en Google Sheets');
+
+    } catch (sheetsError) {
+      console.error('❌ Error guardando en Google Sheets:', sheetsError.message);
+      
+      // Intentar eliminar el evento del calendario ya que no se pudo guardar en sheets
+      try {
+        await cancelEventByReservationCodeOriginal(reservationCode, calendarId);
+        console.log('🧹 Evento eliminado del calendario debido a fallo en sheets');
+      } catch (rollbackError) {
+        console.error('❌ Error eliminando evento del calendario:', rollbackError.message);
+      }
+      
+      return res.json({
+        success: false,
+        error: 'Error guardando datos: ' + sheetsError.message,
+        requiresData: !esClienteExistente
+      });
+    }
+
+    // PASO 7: ENVIAR CORREO DE CONFIRMACIÓN
+    console.log('=== ENVIANDO CORREO DE CONFIRMACIÓN ===');
+    
+    try {
+      await sendAppointmentConfirmation(
+        clientName,
+        clientEmail,
+        date,
+        time,
+        serviceName,
+        profesionalName,
+        reservationCode
+      );
+      console.log('✅ Correo de confirmación enviado');
+
+    } catch (emailError) {
+      console.error('⚠️ Error enviando correo de confirmación:', emailError.message);
+      // No fallar el proceso si el correo no se envía
+    }
+
+    // PASO 8: RESPUESTA EXITOSA
+    console.log('=== CITA AGENDADA EXITOSAMENTE ===');
+    
+    const time12h = formatTimeTo12Hour(time);
+    const dateFormatted = formatDateToSpanishPremium(appointmentDateTime.toDate());
+    
+    const successMessage = esClienteExistente
+      ? `✅ ¡Cita agendada exitosamente! ✈️\n\n📅 Detalles de tu cita:\n• Fecha: ${dateFormatted}\n• Hora: ${time12h}\n• Profesional: ${profesionalName}\n• Servicio: ${serviceName}\n\n🎟️ TU CÓDIGO DE RESERVA ES: ${reservationCode}\n\n¡Gracias por confiar en nosotros! Te esperamos 🌟`
+      : `✅ ¡Cita confirmada! ✈️\n\n📅 Detalles de tu cita:\n• Fecha: ${dateFormatted}\n• Hora: ${time12h}\n• Profesional: ${profesionalName}\n• Servicio: ${serviceName}\n\n🎟️ TU CÓDIGO DE RESERVA ES: ${reservationCode}\n\n¡Gracias por confiar en nosotros! 🌟`;
+
+    return res.json({
+      success: true,
+      respuesta: successMessage,
+      id_cita: reservationCode,
+      esClienteExistente: esClienteExistente,
+      clientName: clientName,
+      clientEmail: clientEmail,
+      clientPhone: clientPhone,
+      fecha: date,
+      hora: time12h,
+      profesional: profesionalName,
+      servicio: serviceName
+    });
+
+  } catch (error) {
+    console.error('❌ Error en agendamiento inteligente:', error.message);
+    return res.json({
+      success: false,
+      error: error.message,
+      requiresData: true
+    });
+  }
+});
+
+/**
  * ENDPOINT: Agendar cita (LÓGICA ORIGINAL)
  * Migrado desde handleSchedule del código de Google Apps Script
  */
@@ -1588,10 +2625,55 @@ app.post('/api/agenda-cita', async (req, res) => {
       serviceName: serviceNameFromBot, 
       date, 
       time, 
-      clientName, 
-      clientEmail, 
-      clientPhone 
+      clientName: clientNameFromRequest, 
+      clientEmail: clientEmailFromRequest, 
+      clientPhone: clientPhoneFromRequest 
     } = req.body;
+
+    // PASO 0: INTENTAR OBTENER INFORMACIÓN DEL PACIENTE DEL CACHÉ O GOOGLE SHEETS
+    let clientName = clientNameFromRequest;
+    let clientEmail = clientEmailFromRequest;
+    let clientPhone = clientPhoneFromRequest;
+    
+    if (clientPhone && (clientPhone !== 'Sin Teléfono')) {
+      console.log('🔍 === BUSCANDO INFORMACIÓN DEL PACIENTE ===');
+      
+      // Primero intentar del caché
+      const cachedInfo = getPatientInfo(clientPhone);
+      if (cachedInfo) {
+        console.log('✅ Información encontrada en caché');
+        if (!clientName || clientName === '') {
+          clientName = cachedInfo.name || clientName;
+          console.log(`   - Nombre actualizado desde caché: ${clientName}`);
+        }
+        if (!clientEmail || clientEmail === 'Sin Email' || clientEmail === '') {
+          clientEmail = cachedInfo.email || clientEmail;
+          console.log(`   - Email actualizado desde caché: ${clientEmail}`);
+        }
+      } else {
+        // Si no está en caché, intentar desde Google Sheets
+        console.log('📋 Buscando información en Google Sheets...');
+        try {
+          const pacientesEncontrados = await consultaDatosPacientePorTelefono(clientPhone);
+          if (pacientesEncontrados && pacientesEncontrados.length > 0) {
+            const pacienteMasReciente = pacientesEncontrados[0]; // Ya viene ordenado por más reciente
+            console.log('✅ Información encontrada en Google Sheets');
+            if (!clientName || clientName === '') {
+              clientName = pacienteMasReciente.nombreCompleto || clientName;
+              console.log(`   - Nombre actualizado desde Sheets: ${clientName}`);
+            }
+            if (!clientEmail || clientEmail === 'Sin Email' || clientEmail === '') {
+              clientEmail = pacienteMasReciente.correoElectronico || clientEmail;
+              console.log(`   - Email actualizado desde Sheets: ${clientEmail}`);
+            }
+            // Guardar en caché para próximas veces
+            savePatientInfo(clientPhone, clientName, clientEmail);
+          }
+        } catch (error) {
+          console.log('⚠️ Error buscando en Google Sheets:', error.message);
+        }
+      }
+    }
 
     // PASO 1: VALIDACIONES ULTRA-ESTRICTAS (lógica original)
     console.log('=== VALIDACIÓN DE CAMPOS INDIVIDUALES ===');
@@ -1672,6 +2754,13 @@ app.post('/api/agenda-cita', async (req, res) => {
     if (!startTime.isValid()) {
       console.log('❌ ERROR: Formato de fecha/hora inválido');
       return res.json({ respuesta: '⚠️ Error: El formato de fecha o hora es inválido.' });
+    }
+
+    if (startTime.minute() !== 0) {
+      console.log('❌ ERROR: Horario con minutos no permitidos');
+      return res.json({
+        respuesta: '⚠️ Solo se permiten horarios en punto (por ejemplo: 10:00, 11:00, 12:00).'
+      });
     }
 
     // NUEVA VALIDACIÓN: No permitir fechas en el pasado
@@ -1760,6 +2849,12 @@ app.post('/api/agenda-cita', async (req, res) => {
       return res.json({ respuesta: '🚫 Error: El servicio solicitado no fue encontrado.' });
     }
 
+    // VALIDACIÓN: Domingo no permitido
+    const dayOfWeek = startTime.day();
+    if (dayOfWeek === 0) {
+      return res.json({ respuesta: '🚫 No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).' });
+    }
+
     // PASO 4: GENERAR CÓDIGO DE RESERVA ÚNICO
     const codigoReserva = generateUniqueReservationCode();
     console.log('🎟️ Código de reserva generado:', codigoReserva);
@@ -1823,6 +2918,12 @@ Agendado por: Agente de WhatsApp`;
     const saveResult = await saveClientDataOriginal(clientData);
     if (saveResult) {
       console.log('🎉 ÉXITO: Datos guardados correctamente en hoja CLIENTES');
+      
+      // Guardar información del paciente en caché para próximas citas
+      if (clientPhone && clientPhone !== 'Sin Teléfono') {
+        savePatientInfo(clientPhone, clientName, clientEmail);
+        console.log('💾 Información del paciente guardada en caché para futuras citas');
+      }
     } else {
       console.log('💥 FALLO: No se pudieron guardar los datos del cliente');
     }
@@ -3060,7 +4161,7 @@ const swaggerDocument = {
     '/api/consulta-disponibilidad': {
       get: {
         summary: 'Consulta disponibilidad de horarios',
-        description: 'Consulta horarios disponibles con análisis de 3 días y estadísticas',
+        description: 'Consulta horarios disponibles de los próximos 4-5 días en un solo mensaje. Muestra todos los horarios disponibles de forma compacta para facilitar la selección.',
         parameters: [
           {
             name: 'calendar',
@@ -3253,11 +4354,13 @@ const swaggerDocument = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['action', 'calendar', 'eventId'],
+                required: ['action', 'eventId'],
                 properties: {
                   action: { type: 'string', example: 'cancel' },
-                  calendar: { type: 'string', example: '1' },
-                  eventId: { type: 'string', example: 'ABC123' }
+                  calendar: { type: 'string', example: '1', description: 'Opcional. Por defecto: 1' },
+                  eventId: { type: 'string', example: 'ABC123' },
+                  codigo_reserva: { type: 'string', example: 'ABC123', description: 'Alias de eventId' },
+                  codigoReserva: { type: 'string', example: 'ABC123', description: 'Alias de eventId' }
                 }
               }
             }
@@ -3738,99 +4841,55 @@ const getServerUrl = () => {
 
 /**
  * Cron Job: Verificar citas próximas en 24 horas
- * Se ejecuta cada hora de lunes a domingo de 9 AM a 7 PM
- * ⚠️ DESACTIVADO
+ * Se ejecuta una vez al día a las 9 AM
+ * Envía notificación 24h antes y permite confirmación
  */
-// cron.schedule('0 9-19 * * *', async () => {
-//   try {
-//     console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (24H) ===');
-//     console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
-//     
-//     const appointments = await getUpcomingAppointments24h();
-//     
-//     if (appointments.length === 0) {
-//       console.log('✅ No hay citas próximas en las siguientes 24 horas');
-//       return;
-//     }
-//     
-//     console.log(`📊 Citas encontradas: ${appointments.length}`);
-//     
-//     // Enviar recordatorios por email y WhatsApp
-//     for (const appointment of appointments) {
-//       console.log(`\n📤 Enviando recordatorio a: ${appointment.clientName}`);
-//       console.log(`🎟️ Código de reserva: ${appointment.codigoReserva}`);
-//       
-//       // Enviar email
-//       if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
-//         await sendEmailReminder24h(appointment);
-//       }
-//       
-//       // Enviar WhatsApp
-//       if (appointment.clientPhone) {
-//         const whatsappResult = await sendWhatsAppReminder24h(appointment);
-//         
-//         // Si WhatsApp se envió exitosamente, actualizar estado a NOTIFICADA
-//         if (whatsappResult.success) {
-//           console.log(`✅ WhatsApp enviado exitosamente. Actualizando estado a NOTIFICADA...`);
-//           await updateClientStatus(appointment.codigoReserva, 'NOTIFICADA');
-//           console.log(`✅ Estado actualizado: ${appointment.codigoReserva} -> NOTIFICADA`);
-//         } else {
-//           console.log(`⚠️ Error enviando WhatsApp: ${whatsappResult.error}`);
-//         }
-//       }
-//     }
-//     
-//     console.log('✅ Recordatorios de 24h enviados exitosamente');
-//     
-//   } catch (error) {
-//     console.error('❌ Error en cron de 24h:', error.message);
-//   }
-// });
+cron.schedule('0 9 * * *', async () => {
+  try {
+    console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (24H) ===');
+    console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
+    
+    const appointments = await getUpcomingAppointments24h();
+    
+    if (appointments.length === 0) {
+      console.log('✅ No hay citas próximas en las siguientes 24 horas');
+      return;
+    }
+    
+    console.log(`📊 Citas encontradas: ${appointments.length}`);
+    
+    // Enviar recordatorios solo por WhatsApp
+    for (const appointment of appointments) {
+      console.log(`\n📤 Enviando recordatorio 24h a: ${appointment.clientName}`);
+      console.log(`🎟️ Código de reserva: ${appointment.codigoReserva}`);
 
-/**
- * Cron Job: Verificar citas próximas en 15 minutos
- * Se ejecuta cada 45 minutos de lunes a sábado
- * ⚠️ DESACTIVADO
- */
-// cron.schedule('*/45 * * * 1-6', async () => {
-//   try {
-//     console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (15MIN) ===');
-//     console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
-//     
-//     const appointments = await getUpcomingAppointments15min();
-//     
-//     if (appointments.length === 0) {
-//       console.log('✅ No hay citas próximas en los siguientes 15 minutos');
-//       return;
-//     }
-//     
-//     console.log(`📊 Citas encontradas: ${appointments.length}`);
-//     
-//     // Enviar recordatorios por email y WhatsApp
-//     for (const appointment of appointments) {
-//       console.log(`\n📤 Enviando recordatorio urgente a: ${appointment.clientName}`);
-//       
-//       // Enviar email
-//       if (appointment.clientEmail && appointment.clientEmail !== 'Sin Email') {
-//         await sendEmailReminder15min(appointment);
-//       }
-//       
-//       // Enviar WhatsApp
-//       if (appointment.clientPhone) {
-//         await sendWhatsAppReminder15min(appointment);
-//       }
-//     }
-//     
-//     console.log('✅ Recordatorios de 15min enviados exitosamente');
-//     
-//   } catch (error) {
-//     console.error('❌ Error en cron de 15min:', error.message);
-//   }
-// });
+      // Enviar WhatsApp
+      if (appointment.clientPhone) {
+        const whatsappResult = await sendWhatsAppReminder24h(appointment);
+        
+        // Si WhatsApp se envió exitosamente, actualizar estado a NOTIFICADA
+        if (whatsappResult.success) {
+          console.log(`✅ WhatsApp enviado exitosamente. Actualizando estado a NOTIFICADA...`);
+          await updateClientStatus(appointment.codigoReserva, 'NOTIFICADA');
+          console.log(`✅ Estado actualizado: ${appointment.codigoReserva} -> NOTIFICADA`);
+        } else {
+          console.log(`⚠️ Error enviando WhatsApp: ${whatsappResult.error}`);
+        }
+      }
+    }
+    
+    console.log('✅ Recordatorios de 24h enviados exitosamente');
+    
+  } catch (error) {
+    console.error('❌ Error en cron de 24h:', error.message);
+  }
+});
 
-console.log('⚠️ Cron jobs de recordatorios DESACTIVADOS');
-console.log('   - Recordatorio 24h: DESACTIVADO');
-console.log('   - Recordatorio 15min: DESACTIVADO');
+
+
+console.log('✅ Cron job de recordatorios ACTIVADO');
+console.log('   - Recordatorio 24h: ACTIVADO (una vez al día a las 9 AM)');
+console.log('   - Recordatorios 12h y 15min: DESACTIVADOS');
 
 app.listen(PORT, () => {
   const serverUrl = getServerUrl();
