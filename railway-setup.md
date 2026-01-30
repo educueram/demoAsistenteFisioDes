@@ -16,14 +16,14 @@ FORCE_FIXED_SCHEDULE=true
 
 # Horarios de trabajo (Lunes a Viernes)
 WORKING_START_HOUR=10       # 10 AM
-WORKING_END_HOUR=19         # 7 PM
+WORKING_END_HOUR=18         # 6 PM
 LUNCH_START_HOUR=14         # 2 PM
 LUNCH_END_HOUR=15          # 3 PM
 SLOT_INTERVAL_MINUTES=60   # 1 hora por slot
 
 # Horarios especiales de fin de semana
 SATURDAY_START_HOUR=10      # Sábado: 10 AM
-SATURDAY_END_HOUR=12        # Sábado: 12 PM
+SATURDAY_END_HOUR=14        # Sábado: 2 PM
 SUNDAY_ENABLED=false        # Domingos cerrado (no cambiar)
 ```
 
@@ -64,7 +64,7 @@ Las siguientes variables son **ESENCIALES** para que los horarios funcionen corr
 
 - `FORCE_FIXED_SCHEDULE=true` - Fuerza el uso de horarios fijos
 - `WORKING_START_HOUR=10` - Hora de inicio (10 AM)
-- `WORKING_END_HOUR=19` - Hora de fin (7 PM)  
+- `WORKING_END_HOUR=18` - Hora de fin (6 PM)  
 - `LUNCH_START_HOUR=14` - Inicio de comida (2 PM)
 - `LUNCH_END_HOUR=15` - Fin de comida (3 PM)
 - `TIMEZONE=America/Mexico_City` - Zona horaria correcta
@@ -75,13 +75,13 @@ Después de agregar las variables:
 
 ### **Lunes a Viernes:**
 1. Ve a: `https://tu-app.railway.app/api/consulta-disponibilidad?calendar=1&service=1&date=2025-09-05` (jueves)
-2. Verifica que los horarios sean: **10:00, 11:00, 12:00, 13:00, 15:00, 16:00, 17:00, 18:00**
-3. NO debe aparecer: horarios antes de 10:00, después de 19:00, o entre 14:00-15:00
+2. Verifica que los horarios sean: **10:00, 11:00, 12:00, 13:00, 15:00, 16:00, 17:00**
+3. NO debe aparecer: horarios antes de 10:00, después de 18:00, o entre 14:00-15:00
 
 ### **Sábados:**
 1. Ve a: `https://tu-app.railway.app/api/consulta-disponibilidad?calendar=1&service=1&date=2025-09-06` (sábado)
-2. Verifica que los horarios sean: **10:00, 11:00**
-3. NO debe aparecer: horarios fuera de 10:00-12:00
+2. Verifica que los horarios sean: **10:00, 11:00, 12:00, 13:00**
+3. NO debe aparecer: horarios fuera de 10:00-14:00
 
 ### **Domingos:**
 1. Ve a: `https://tu-app.railway.app/api/consulta-disponibilidad?calendar=1&service=1&date=2025-09-07` (domingo)
@@ -106,10 +106,10 @@ Después de agregar las variables:
 - ✅ Verifica `SUNDAY_ENABLED=false`
 - ✅ Redeploya
 
-### Si el sábado no muestra 10:00-12:00:
-- ✅ Agrega `SATURDAY_START_HOUR=10` y `SATURDAY_END_HOUR=12`
+### Si el sábado no muestra 10:00-14:00:
+- ✅ Agrega `SATURDAY_START_HOUR=10` y `SATURDAY_END_HOUR=14`
 - ✅ Redeploya
 
 ### Si sábado tiene horario de comida:
 - ✅ Los sábados no tienen horario de comida automáticamente
-- ✅ Solo trabaja de 10:00 AM a 12:00 PM 
+- ✅ Solo trabaja de 10:00 AM a 2:00 PM 

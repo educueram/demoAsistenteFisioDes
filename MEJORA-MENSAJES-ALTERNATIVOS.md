@@ -4,7 +4,7 @@
 
 ### **Antes (Confuso):**
 - Usuario consulta: **Viernes 26 de septiembre**
-- Sistema responde: *"📅 Sábados trabajamos de 10:00 AM a 12:00 PM, pero no hay espacios disponibles."*
+- Sistema responde: *"📅 Sábados trabajamos de 10:00 AM a 2:00 PM, pero no hay espacios disponibles."*
 - **¿Qué?** ❌ El usuario no entiende por qué le hablan de sábados
 
 ### **Causa Raíz:**

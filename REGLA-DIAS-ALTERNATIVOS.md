@@ -36,7 +36,7 @@ Cuando un paciente consulta disponibilidad para un día específico y **no hay h
 - ❌ **No busca en el pasado** (fechas < hoy)
 - ❌ **No incluye domingos** (día no laboral)
 - ✅ **Verifica disponibilidad real** usando Google Calendar
-- ✅ **Aplica horarios 10 AM - 7 PM** (respeta reglas de negocio)
+- ✅ **Aplica horarios 10 AM - 6 PM** (respeta reglas de negocio)
 
 ## 📱 Experiencia del Usuario
 

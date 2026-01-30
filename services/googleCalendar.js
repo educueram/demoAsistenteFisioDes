@@ -8,10 +8,10 @@ const crypto = require('crypto');
  * Migrado desde Google Apps Script
  */
 
-/**
- * Encontrar slots disponibles en un calendario
- * Horario: 10 AM a 7 PM, excluyendo horario de comida (2 PM a 3 PM)
- */
+  /**
+   * Encontrar slots disponibles en un calendario
+   * Horario: 10 AM a 6 PM, excluyendo horario de comida (2 PM a 3 PM)
+   */
 async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
   try {
     console.log(`📅 Buscando slots para ${calendarId} el ${date.toISOString().split('T')[0]}`);
@@ -25,15 +25,34 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
       return [];
     }
     
-    // Definir horario según día
+    // Definir horario según día (usar "hours" si viene del caller)
     let workingHours;
-    if (dayOfWeek === 6) { // Sábado
-      workingHours = { start: 10, end: 13 }; // 10 AM - 1 PM
+    if (hours && typeof hours === 'object') {
+      const isSaturday = dayOfWeek === 6;
+      const defaultStart = isSaturday ? 10 : 10;
+      const defaultEnd = isSaturday ? 14 : 18;
+      const start = Number.isFinite(hours.start) ? hours.start : defaultStart;
+      const end = Number.isFinite(hours.end) ? hours.end : defaultEnd;
+      const hasLunch = typeof hours.hasLunch === 'boolean'
+        ? hours.hasLunch
+        : (hours.lunchStart !== undefined && hours.lunchEnd !== undefined);
+      workingHours = {
+        start,
+        end,
+        hasLunch,
+        lunchStart: hours.lunchStart,
+        lunchEnd: hours.lunchEnd
+      };
+    } else if (dayOfWeek === 6) { // Sábado
+      workingHours = { start: 10, end: 14, hasLunch: false }; // 10 AM - 2 PM
     } else { // Lunes a viernes
-      workingHours = { start: 10, end: 19 }; // 10 AM - 7 PM
+      workingHours = { start: 10, end: 18, hasLunch: true, lunchStart: 14, lunchEnd: 15 }; // 10 AM - 6 PM
     }
     
     console.log(`📅 Horario: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    if (workingHours.hasLunch) {
+      console.log(`🍽️ Horario comida: ${workingHours.lunchStart}:00 - ${workingHours.lunchEnd}:00`);
+    }
     
     // Obtener eventos del calendario
     const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
@@ -85,6 +104,11 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
     const isToday = dateMoment.isSame(now, 'day');
     
     for (let hour = workingHours.start; hour <= workingHours.end; hour++) {
+      // Excluir horario de comida
+      if (workingHours.hasLunch && hour >= workingHours.lunchStart && hour < workingHours.lunchEnd) {
+        console.log(`❌ Slot ${hour}:00 en horario de comida`);
+        continue;
+      }
       // Verificar si está ocupado
       if (occupiedHours.has(hour)) {
         console.log(`❌ Slot ${hour}:00 ocupado`);
@@ -122,8 +146,8 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
   try {
     const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
     // CORRECCIÓN: El timeMax debe incluir el final del último slot
-    // Para sábados (10 AM - 1 PM), el último slot es 1 PM - 2 PM, así que timeMax debe ser 14:00 (2 PM)
-    // Para días normales (9 AM - 7 PM), el último slot es 7 PM - 8 PM, así que timeMax debe ser 20:00 (8 PM)
+    // Para sábados (10 AM - 2 PM), el último slot es 2 PM - 3 PM, así que timeMax debe ser 15:00 (3 PM)
+    // Para días normales (10 AM - 6 PM), el último slot es 6 PM - 7 PM, así que timeMax debe ser 19:00 (7 PM)
     const endOfDay = dateMoment.clone().hour(workingHours.end + 1).minute(0).second(0);
     
     console.log(`📅 === CONFIGURACIÓN DE SLOTS ===`);
@@ -329,7 +353,7 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
     }
 
     // Función auxiliar para verificar si un horario está fuera del horario laboral
-    // CORRECCIÓN: Permitir hasta la última hora (7 PM) como inicio de sesión
+    // CORRECCIÓN: Permitir hasta la última hora (6 PM) como inicio de sesión
     const isOutsideWorkingHours = (time) => {
       const hour = time.hour();
       return hour < workingHours.start || hour > workingHours.end;
@@ -706,22 +730,22 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
       }
     };
 
-    // SOLUCIÓN DEFINITIVA: Forzar horario de inicio a 10 AM y fin a 7 PM antes de generar slots
+    // SOLUCIÓN DEFINITIVA: Forzar horario de inicio a 10 AM y fin a 6 PM antes de generar slots
     if (dayOfWeek !== 6) {
       if (workingHours.start < 10) {
         console.warn(`   ⚠️ CORRIGIENDO: Horario de inicio era ${workingHours.start}:00, forzando a 10:00`);
         workingHours.start = 10;
       }
-      if (workingHours.end > 19) {
-        console.warn(`   ⚠️ CORRIGIENDO: Horario de fin era ${workingHours.end}:00, forzando a 19:00 (7 PM)`);
-        workingHours.end = 19;
+      if (workingHours.end > 18) {
+        console.warn(`   ⚠️ CORRIGIENDO: Horario de fin era ${workingHours.end}:00, forzando a 18:00 (6 PM)`);
+        workingHours.end = 18;
       }
     }
     
     // CORRECCIÓN: Generar slots de hora en hora desde el inicio hasta el fin del día laboral
     // Incluir el slot de la última hora como última sesión del día
-    // Para sábados: 10 AM - 1 PM (última sesión: 1 PM - 2 PM)
-    // Para días normales: 10 AM - 7 PM (última sesión: 7 PM - 8 PM)
+    // Para sábados: 10 AM - 2 PM (última sesión: 2 PM - 3 PM)
+    // Para días normales: 10 AM - 6 PM (última sesión: 6 PM - 7 PM)
     console.log(`\n🔄 === GENERANDO SLOTS DE ${workingHours.start}:00 A ${workingHours.end}:00 ===`);
     console.log(`   ✅ Horario de inicio: ${workingHours.start}:00 ${workingHours.start === 10 ? '(CORRECTO)' : '(VERIFICAR)'}`);
     console.log(`   📋 Rango completo: ${workingHours.start}:00 - ${workingHours.end}:00`);
@@ -789,7 +813,7 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
       slotsEvaluated.push(hour);
       
       // Verificar restricciones básicas
-      // CORRECCIÓN: Permitir el slot de la última hora (1 PM para sábados, 7 PM para días normales)
+      // CORRECCIÓN: Permitir el slot de la última hora (2 PM para sábados, 6 PM para días normales)
       if (hour > workingHours.end) {
         console.log(`      ❌ RECHAZADO: fuera de horario laboral (hora ${hour} > ${workingHours.end})`);
         slotsRejected.push({ hour, reason: 'fuera_horario_laboral' });

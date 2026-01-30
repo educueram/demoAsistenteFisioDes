@@ -120,9 +120,9 @@ start: hours?.start || 10,
 
 ### **Consulta de Disponibilidad**
 - **Anticipación mínima**: 1 hora
-- **Horario de servicio**: 10:00 AM - 7:00 PM
+- **Horario de servicio**: 10:00 AM - 6:00 PM
 - **Horario de comida**: 2:00 PM - 3:00 PM (no disponible)
-- **Sábados**: 10:00 AM - 12:00 PM
+- **Sábados**: 10:00 AM - 2:00 PM
 - **Domingos**: Cerrado
 
 ### **Agendamiento**
@@ -139,7 +139,7 @@ Para personalizar estos valores sin tocar el código:
 WORKING_START_HOUR=10
 
 # Horario de fin (por defecto: 19)
-WORKING_END_HOUR=19
+WORKING_END_HOUR=18
 
 # Anticipación mínima en horas (usado en config.js)
 MIN_BOOKING_HOURS=1
