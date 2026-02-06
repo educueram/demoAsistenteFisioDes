@@ -15,7 +15,7 @@ const config = {
 
   // Configuración del negocio (migrada desde BUSINESS_CONFIG)
   business: {
-    sheetId: '1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
+    sheetId: process.env.GOOGLE_SHEET_ID ||'1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
     email: process.env.BUSINESS_EMAIL || 'pruebasmiptech@gmail.com',
     name: process.env.BUSINESS_NAME || 'Demo Asistente Fisio',
     phone: process.env.BUSINESS_PHONE || '+52 5555555555',
@@ -61,8 +61,8 @@ const config = {
 
   // Configuración de WhatsApp Bot (migrada desde BBC_CONFIG)
   whatsapp: {
-    apiUrl: process.env.BBC_API_URL || 'https://app.builderbot.cloud/api/v2/016cda39-512b-4e2a-a753-ae3bda6d0bd8/messages',
-    apiKey: process.env.BBC_API_KEY || 'bb-19a33158-6305-4629-8405-1b2622e4d72e'
+    apiUrl: process.env.BBC_API_URL || 'https://app.builderbot.cloud/api/v2/549e20a4-3157-4f1a-b23a-f51b98052281/messages',
+    apiKey: process.env.BBC_API_KEY || 'bb-61468363-0112-4d0d-8732-d2977c0c84ec'
   },
 
   // Configuraciones de validación
