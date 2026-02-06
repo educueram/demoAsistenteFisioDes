@@ -1,5 +1,5 @@
 /**
- * Configuración centralizada de la aplicación ValGop API
+ * Configuración centralizada de la aplicación Demo Asistente Fisio API
  * Migrada desde Google Apps Script
  */
 
@@ -17,7 +17,7 @@ const config = {
   business: {
     sheetId: '1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
     email: process.env.BUSINESS_EMAIL || 'pruebasmiptech@gmail.com',
-    name: process.env.BUSINESS_NAME || 'Clinica ValGop',
+    name: process.env.BUSINESS_NAME || 'Demo Asistente Fisio',
     phone: process.env.BUSINESS_PHONE || '+52 5555555555',
     address: process.env.BUSINESS_ADDRESS || 'CDMX, México'
   },

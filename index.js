@@ -791,7 +791,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   const serverUrl = getServerUrl();
   res.json({
-    message: '🚀 ValGop API - Sistema de Gestión de Citas',
+    message: '🚀 Demo Asistente Fisio API - Sistema de Gestión de Citas',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development',
     documentation: `${serverUrl}/api-docs`,
@@ -4190,7 +4190,7 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
 const swaggerDocument = {
   openapi: '3.0.0',
   info: {
-    title: 'ValGop API - Sistema de Gestión de Citas',
+    title: 'Demo Asistente Fisio API - Sistema de Gestión de Citas',
     description: 'API migrada de Google Apps Script para gestión de citas médicas',
     version: '1.0.0',
     contact: {
@@ -4199,7 +4199,7 @@ const swaggerDocument = {
   },
   servers: [
     {
-      url: 'https://agendavaleriagopar-production.up.railway.app',
+      url: 'https://demoasistentefisiodes-production.up.railway.app',
       description: 'Servidor de producción (Railway)'
     },
     {
@@ -4945,7 +4945,7 @@ app.listen(PORT, () => {
   const serverUrl = getServerUrl();
   const isProduction = process.env.NODE_ENV === 'production';
   
-  console.log(`🚀 ValGop API ejecutándose en puerto ${PORT}`);
+  console.log(`🚀 Demo Asistente Fisio API ejecutándose en puerto ${PORT}`);
   console.log(`🌍 Entorno: ${isProduction ? 'PRODUCCIÓN (Railway)' : 'DESARROLLO'}`);
   console.log(`📚 Documentación disponible en: ${serverUrl}/api-docs`);
   console.log(`🌐 Endpoints disponibles:`);
