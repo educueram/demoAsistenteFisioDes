@@ -30,8 +30,8 @@ const config = {
   // Configuración de Google APIs
   google: {
     privateKey: process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
-    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || '',
-    projectId: process.env.GOOGLE_PROJECT_ID || '',
+    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || 'demosmiptech@demos-474116.iam.gserviceaccount.com',
+    projectId: process.env.GOOGLE_PROJECT_ID || 'demos-474116',
     scopes: [
       'https://www.googleapis.com/auth/spreadsheets',
       'https://www.googleapis.com/auth/calendar'
