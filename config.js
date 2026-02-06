@@ -15,7 +15,7 @@ const config = {
 
   // Configuración del negocio (migrada desde BUSINESS_CONFIG)
   business: {
-    sheetId: process.env.GOOGLE_SHEET_ID || '1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
+    sheetId: '1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
     email: process.env.BUSINESS_EMAIL || 'pruebasmiptech@gmail.com',
     name: process.env.BUSINESS_NAME || 'Clinica ValGop',
     phone: process.env.BUSINESS_PHONE || '+52 5555555555',
