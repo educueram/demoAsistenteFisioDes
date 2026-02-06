@@ -15,8 +15,8 @@ const config = {
 
   // Configuración del negocio (migrada desde BUSINESS_CONFIG)
   business: {
-    sheetId: process.env.GOOGLE_SHEET_ID || '1zQpN_1MAQVx6DrYwbL8zK49Wv5xu4eDlGqTjKl9d-JU',
-    email: process.env.BUSINESS_EMAIL || 'goparirisvaleria@gmail.com',
+    sheetId: process.env.GOOGLE_SHEET_ID || '1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
+    email: process.env.BUSINESS_EMAIL || 'pruebasmiptech@gmail.com',
     name: process.env.BUSINESS_NAME || 'Clinica ValGop',
     phone: process.env.BUSINESS_PHONE || '+52 5555555555',
     address: process.env.BUSINESS_ADDRESS || 'CDMX, México'
@@ -70,7 +70,7 @@ const config = {
   smtp: {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: parseInt(process.env.SMTP_PORT) || 587,
-    user: process.env.SMTP_USER || 'goparirisvaleria@gmail.com',
+    user: process.env.SMTP_USER || 'pruebasmiptech@gmail.com',
     pass: process.env.SMTP_PASS || '' // Debe ser App Password de Gmail
   },
 
