@@ -2198,10 +2198,12 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     return res.json(response);
     
   } catch (error) {
-    console.error('❌ Error en carga datos iniciales:', error.toString());
+    console.error('❌ Error en carga datos iniciales:', error);
+    console.error('❌ Stack:', error.stack);
     return res.status(500).json({ 
       error: 'Error al cargar datos iniciales',
-      detalle: error.message
+      detalle: error.message || error.toString() || 'Error desconocido',
+      stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
     });
   }
 });
