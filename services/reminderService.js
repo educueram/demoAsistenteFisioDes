@@ -1,112 +1,12 @@
 const moment = require('moment-timezone');
 const config = require('../config');
-const { getSheetsInstance } = require('./googleAuth');
+const { getUpcomingAppointments24h, getUpcomingAppointments15min } = require('./dataService');
 const { sendReminder24h } = require('./emailService');
 
 /**
  * Servicio de Recordatorios Automáticos
  * Envía notificaciones de citas próximas por email y WhatsApp
  */
-
-/**
- * Obtener citas próximas en las siguientes 24 horas
- */
-async function getUpcomingAppointments24h() {
-  try {
-    console.log('🔍 === BUSCANDO CITAS PRÓXIMAS (24 HORAS) ===');
-    
-    const sheets = await getSheetsInstance();
-    const now = moment().tz(config.timezone.default);
-    const in23Hours = now.clone().add(23, 'hours');
-    const in25Hours = now.clone().add(25, 'hours');
-    
-    console.log(`⏰ Ahora: ${now.format('YYYY-MM-DD HH:mm')}`);
-    console.log(`⏰ Ventana de recordatorio: ${in23Hours.format('YYYY-MM-DD HH:mm')} a ${in25Hours.format('YYYY-MM-DD HH:mm')}`);
-    
-    // Obtener todos los datos de la hoja CLIENTES
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: config.business.sheetId,
-      range: config.sheets.clients
-    });
-
-    const data = response.data.values || [];
-    
-    if (data.length <= 1) {
-      console.log('⚠️ No hay datos en la hoja CLIENTES');
-      return [];
-    }
-
-    const upcomingAppointments = [];
-    
-    // Buscar citas próximas (excluir header)
-    for (let i = 1; i < data.length; i++) {
-      const row = data[i];
-      const estado = row[9]; // ESTADO
-      const fechaCita = row[6]; // FECHA_CITA
-      const horaCita = row[7]; // HORA_CITA
-      
-      console.log(`🔍 Revisando fila ${i}: ${row[2]} - Fecha: ${fechaCita} Hora: ${horaCita} Estado: ${estado}`);
-      
-      // Solo enviar recordatorio de 24h si el estado es AGENDADA o REAGENDADA
-      if (estado !== 'AGENDADA' && estado !== 'REAGENDADA') {
-        console.log(`   ⏭️ Saltando: estado "${estado}" no válido para recordatorio 24h (solo AGENDADA o REAGENDADA)`);
-        continue;
-      }
-      
-      console.log(`   ✅ Estado válido para recordatorio: ${estado}`);
-      
-      // Verificar que tenga fecha y hora
-      if (!fechaCita || !horaCita) {
-        console.log(`   ⏭️ Saltando: falta fecha u hora`);
-        continue;
-      }
-      
-      // Crear momento de la cita
-      const appointmentTime = moment.tz(`${fechaCita} ${horaCita}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
-      
-      if (!appointmentTime.isValid()) {
-        console.log(`   ⚠️ Fecha/hora inválida: ${fechaCita} ${horaCita}`);
-        continue;
-      }
-      
-      const hoursUntil = appointmentTime.diff(now, 'hours', true);
-      console.log(`   ⏱️ Horas hasta la cita: ${hoursUntil.toFixed(2)}`);
-      
-      // Verificar si está entre 23 y 25 horas en el futuro (ventana de 24h)
-      if (hoursUntil >= 23 && hoursUntil <= 25) {
-        upcomingAppointments.push({
-          codigoReserva: row[1],
-          clientName: row[2],
-          clientPhone: row[3],
-          clientEmail: row[4],
-          profesionalName: row[5],
-          fechaCita: row[6],
-          horaCita: row[7],
-          serviceName: row[8],
-          estado: row[9],
-          appointmentTime: appointmentTime,
-          hoursUntil: Math.round(hoursUntil)
-        });
-        
-        console.log(`✅ ¡CITA ENCONTRADA! ${row[2]} - ${fechaCita} ${horaCita} (en ${hoursUntil.toFixed(1)} horas)`);
-      } else if (hoursUntil > 0 && hoursUntil < 23) {
-        console.log(`   ⏭️ Cita muy próxima (${hoursUntil.toFixed(1)}h) - recordatorio ya debió enviarse o se enviará el de 15min`);
-      } else if (hoursUntil > 25) {
-        console.log(`   ⏭️ Cita lejana (${hoursUntil.toFixed(1)}h) - aún no es tiempo de recordatorio de 24h`);
-      } else {
-        console.log(`   ⏭️ Cita en el pasado`);
-      }
-    }
-
-    console.log(`\n📊 Total citas próximas (24h): ${upcomingAppointments.length}`);
-    return upcomingAppointments;
-
-  } catch (error) {
-    console.error('❌ Error obteniendo citas próximas (24h):', error.message);
-    return [];
-  }
-}
-
 
 /**
  * Enviar recordatorio por email (24 horas antes)
@@ -192,9 +92,32 @@ Responde con:
 ¡Te esperamos! 🌟`;
 }
 
+/**
+ * Generar mensaje de WhatsApp para recordatorio de 15 minutos
+ */
+function generateWhatsAppMessage15min(appointment) {
+  const horaFormateada = formatTimeTo12Hour(appointment.horaCita);
+  
+  return `⏰ *¡Tu cita es en 15 minutos!*
+
+Hola *${appointment.clientName}*,
+
+Te recordamos que tu cita está por comenzar:
+
+⏰ *Hora:* ${horaFormateada}
+👨‍⚕️ *Con:* ${appointment.profesionalName}
+🩺 *Servicio:* ${appointment.serviceName}
+🎟️ *Código:* ${appointment.codigoReserva}
+
+📍 ${config.business.address}
+
+¡Te esperamos! 🌟`;
+}
+
 module.exports = {
   getUpcomingAppointments24h,
+  getUpcomingAppointments15min,
   sendEmailReminder24h,
-  generateWhatsAppMessage24h
+  generateWhatsAppMessage24h,
+  generateWhatsAppMessage15min
 };
-

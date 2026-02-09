@@ -10,10 +10,11 @@ const swaggerUi = require('swagger-ui-express');
 // Importar configuración y servicios
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
-const { getSheetData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, ensureClientsSheet, consultaDatosPacientePorTelefono } = require('./services/googleSheets');
+const { getConfigData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, consultaDatosPacientePorTelefono, getUpcomingAppointments24h, getUpcomingAppointments15min, getClienteByCelular } = require('./services/dataService');
+const { initializePool, testConnection } = require('./services/mysqlService');
 const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, generateUniqueReservationCode, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
-const { getUpcomingAppointments24h, sendEmailReminder24h } = require('./services/reminderService');
+const { sendEmailReminder24h } = require('./services/reminderService');
 const { sendWhatsAppReminder24h } = require('./services/whatsappService');
 
 const app = express();
@@ -62,16 +63,30 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =================================================================
-// 🔧 INICIALIZACIÓN DE GOOGLE APIS
+// 🔧 INICIALIZACIÓN DE SERVICIOS
 // =================================================================
 
-// Inicializar autenticación al arrancar la aplicación
+// Inicializar conexión a MySQL
+try {
+  initializePool();
+  testConnection().then(success => {
+    if (success) {
+      console.log('🔧 MySQL inicializado correctamente');
+    } else {
+      console.error('❌ Error verificando conexión MySQL');
+    }
+  });
+} catch (error) {
+  console.error('❌ Error inicializando MySQL:', error.message);
+}
+
+// Inicializar autenticación de Google (para Calendar)
 try {
   initializeAuth();
-  console.log('🔧 Google APIs inicializadas correctamente');
+  console.log('🔧 Google Calendar API inicializada correctamente');
 } catch (error) {
-  console.error('❌ Error inicializando Google APIs:', error.message);
-  console.log('⚠️ La aplicación continuará con datos simulados para desarrollo');
+  console.error('❌ Error inicializando Google Calendar API:', error.message);
+  console.log('⚠️ La aplicación continuará pero sin acceso a Google Calendar');
 }
 
 // =================================================================
@@ -275,15 +290,15 @@ function getUrgencyText(percentage) {
 }
 
 // Nueva función: Buscar días alternativos con disponibilidad
-async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber, serviceNumber, sheetData, maxDaysToSearch = 14) {
+async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber, serviceNumber, configData, maxDaysToSearch = 14) {
   try {
     console.log(`🔍 === BUSCANDO DÍAS ALTERNATIVOS ===`);
     console.log(`📅 Fecha objetivo: ${targetMoment.format('YYYY-MM-DD')} (${targetMoment.format('dddd')})`);
     
     const today = moment().tz(config.timezone.default).startOf('day');
     const alternativeDays = [];
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     
     // 🎯 ESTRATEGIA: Buscar 1 día anterior + días posteriores hasta completar 2 días
     console.log(`📉 Buscando 1 día anterior con disponibilidad...`);
@@ -302,7 +317,7 @@ async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber,
       }
       
       if (previousDay.isSameOrAfter(today, 'day')) {
-        const prevResult = await checkDayAvailability(previousDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+        const prevResult = await checkDayAvailability(previousDay, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
         
         if (prevResult && prevResult.hasAvailability && prevResult.stats.availableSlots >= 1) {
           console.log(`   📊 Día anterior evaluado: ${prevResult.dateStr} (${prevResult.dayName}) - ${prevResult.stats.availableSlots} slots`);
@@ -337,7 +352,7 @@ async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber,
         continue;
       }
       
-      const nextResult = await checkDayAvailability(nextDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+      const nextResult = await checkDayAvailability(nextDay, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
       
       if (nextResult && nextResult.hasAvailability && nextResult.stats.availableSlots >= 1) {
         console.log(`   📊 Día posterior evaluado: ${nextResult.dateStr} (${nextResult.dayName}) - ${nextResult.stats.availableSlots} slots`);
@@ -373,12 +388,12 @@ async function findAlternativeDaysWithAvailability(targetMoment, calendarNumber,
 }
 
 // Función auxiliar para verificar disponibilidad de un día específico
-async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration) {
+async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, configData, calendarId, serviceDuration) {
   try {
     const dateStr = dayMoment.format('YYYY-MM-DD');
     const jsDay = dayMoment.toDate().getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
+    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
 
     console.log(`🔍 Verificando día ${dateStr} (${moment(dayMoment).format('dddd')})`);
 
@@ -509,12 +524,12 @@ function findNextWorkingDay(calendarNumber, startDate, hoursData) {
     
     while (attempts < maxDays) {
       const jsDay = nextDay.toDate().getDay();
-      const sheetDay = (jsDay === 0) ? 7 : jsDay; // Convertir domingo de 0 a 7
+      const dayNum = (jsDay === 0) ? 7 : jsDay; // Convertir domingo de 0 a 7
       
-      console.log(`   - Evaluando: ${nextDay.format('YYYY-MM-DD')} (JS day: ${jsDay}, Sheet day: ${sheetDay})`);
+      console.log(`   - Evaluando: ${nextDay.format('YYYY-MM-DD')} (JS day: ${jsDay}, Day number: ${dayNum})`);
       
       // Buscar horarios para este día
-      const workingHours = findWorkingHours(calendarNumber, sheetDay, hoursData);
+      const workingHours = findWorkingHours(calendarNumber, dayNum, hoursData);
       
       if (workingHours) {
         console.log(`   ✅ Día hábil encontrado: ${nextDay.format('YYYY-MM-DD')}`);
@@ -540,7 +555,7 @@ function findNextWorkingDay(calendarNumber, startDate, hoursData) {
 }
 
 // Nueva función: Buscar la próxima fecha disponible con slots disponibles
-async function findNextAvailableDateWithSlots(startDate, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration, maxDaysToSearch = 30) {
+async function findNextAvailableDateWithSlots(startDate, calendarNumber, serviceNumber, configData, calendarId, serviceDuration, maxDaysToSearch = 30) {
   try {
     console.log(`🔍 === BUSCANDO PRÓXIMA FECHA DISPONIBLE ===`);
     console.log(`   - Fecha inicio: ${startDate.format('YYYY-MM-DD')}`);
@@ -571,7 +586,7 @@ async function findNextAvailableDateWithSlots(startDate, calendarNumber, service
       console.log(`   🔍 Evaluando: ${currentDay.format('YYYY-MM-DD')} (${currentDay.format('dddd')})`);
       
       try {
-        const dayResult = await checkDayAvailability(currentDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+        const dayResult = await checkDayAvailability(currentDay, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
         
         if (dayResult && dayResult.hasAvailability && dayResult.slots && dayResult.slots.length > 0) {
           console.log(`   ✅ Fecha disponible encontrada: ${currentDay.format('YYYY-MM-DD')}`);
@@ -777,7 +792,7 @@ app.get('/health', (req, res) => {
     port: PORT,
     services: {
       googleAuth: config.google.clientEmail ? 'configured' : 'missing',
-      googleSheets: config.business.sheetId ? 'configured' : 'missing'
+      mysql: config.mysql.host ? 'configured' : 'missing'
     },
     version: '1.0.0'
   };
@@ -801,7 +816,7 @@ app.get('/', (req, res) => {
       cancela_cita: `POST ${serverUrl}/api/cancela-cita`,
       reagenda_cita: `POST ${serverUrl}/api/reagenda-cita`,
       confirma_cita: `POST ${serverUrl}/api/confirma-cita`,
-      consulta_fecha: `GET ${serverUrl}/api/consulta-fecha-actual`,
+      carga_datos_iniciales: `GET ${serverUrl}/api/carga-datos-iniciales?celular={numero}`,
       consulta_datos_paciente: `GET ${serverUrl}/api/consulta-datos-paciente`
     },
     status: 'operational'
@@ -836,16 +851,16 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     
     const targetDate = targetMoment.toDate();
 
-    // Obtener datos reales de Google Sheets
-    let sheetData;
+    // Obtener datos de MySQL
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
     } catch (error) {
-      console.log('⚠️ Error obteniendo datos reales, usando mock data:', error.message);
-      sheetData = developmentMockData;
+      console.log('⚠️ Error obteniendo datos de MySQL, usando mock data:', error.message);
+      configData = developmentMockData;
     }
 
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     if (!calendarId) { 
       console.log(`❌ Calendario no encontrado: ${calendarNumber}`);
       return res.json(createJsonResponse({ 
@@ -853,7 +868,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       })); 
     }
 
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
     if (!serviceDuration) { 
       console.log(`❌ Servicio no encontrado: ${serviceNumber}`);
       return res.json(createJsonResponse({ 
@@ -882,7 +897,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     
     // CORRECCIÓN: Si es domingo, buscar próxima fecha disponible y mostrar mensaje
     const jsDay = targetDate.getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
     
     if (jsDay === 0) {
       console.log(`🚫 DOMINGO detectado - Buscando próxima fecha disponible`);
@@ -893,7 +908,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
         targetMoment,
         calendarNumber,
         serviceNumber,
-        sheetData,
+        configData,
         calendarId,
         serviceDuration
       );
@@ -911,7 +926,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       }
     }
     
-    const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
     
     if (!workingHours) {
       return res.json(createJsonResponse({ 
@@ -965,11 +980,11 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       if (dayMoment.isSameOrAfter(today, 'day')) {
         try {
           const jsDay = dayInfo.date.getDay();
-          const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-          const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+          const dayNumber = (jsDay === 0) ? 7 : jsDay;
+          const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
 
           if (!workingHours) {
-            console.log(`   ⚠️ No se encontraron horarios laborales para ${dateStr} (día ${sheetDayNumber})`);
+            console.log(`   ⚠️ No se encontraron horarios laborales para ${dateStr} (día ${dayNumber})`);
             continue;
           }
 
@@ -1106,7 +1121,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       
       // Verificar el día solicitado específicamente
       const jsDay = targetDate.getDay();
-      const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
+      const dayNumber = (jsDay === 0) ? 7 : jsDay;
       
       // 🚫 PROHIBICIÓN: No permitir domingos
       if (jsDay === 0) {
@@ -1118,7 +1133,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
           targetMoment,
           calendarNumber,
           serviceNumber,
-          sheetData,
+          configData,
           calendarId,
           serviceDuration
         );
@@ -1136,7 +1151,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
         }
       }
       
-      const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+      const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
       
       if (!workingHours) {
         return res.json(createJsonResponse({ 
@@ -1233,7 +1248,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
             targetMoment,
             calendarNumber,
             serviceNumber,
-            sheetData,
+            configData,
             calendarId,
             serviceDuration
           );
@@ -1387,15 +1402,15 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
           // Si es domingo, buscar próxima fecha disponible
           if (jsDay === 0) {
             try {
-              const sheetData = await getSheetData();
-              const calendarId = findData('1', sheetData.calendars, 0, 1);
-              const serviceDuration = findData(req.query?.service || '1', sheetData.services, 0, 1);
+              const configData = await getConfigData();
+              const calendarId = findData('1', configData.calendars, 0, 1);
+              const serviceDuration = findData(req.query?.service || '1', configData.services, 0, 1);
               
               const nextAvailable = await findNextAvailableDateWithSlots(
                 targetMoment,
                 '1',
                 req.query?.service || '1',
-                sheetData,
+                configData,
                 calendarId,
                 serviceDuration
               );
@@ -1418,15 +1433,15 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
           
           // Para otros días, intentar buscar próxima fecha disponible
           try {
-            const sheetData = await getSheetData();
-            const calendarId = findData('1', sheetData.calendars, 0, 1);
-            const serviceDuration = findData(req.query?.service || '1', sheetData.services, 0, 1);
+            const configData = await getConfigData();
+            const calendarId = findData('1', configData.calendars, 0, 1);
+            const serviceDuration = findData(req.query?.service || '1', configData.services, 0, 1);
             
             const nextAvailable = await findNextAvailableDateWithSlots(
               targetMoment,
               '1',
               req.query?.service || '1',
-              sheetData,
+              configData,
               calendarId,
               serviceDuration
             );
@@ -1487,9 +1502,9 @@ app.post('/api/cancela-cita', async (req, res) => {
     console.log(`📊 Parámetros: calendar=${calendarNumber}, código=${codigoReservaFinal}`);
 
     // Obtener datos de configuración
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
       console.log('✅ Configuración obtenida correctamente');
     } catch (error) {
       console.error('❌ Error obteniendo configuración:', error.message);
@@ -1497,7 +1512,7 @@ app.post('/api/cancela-cita', async (req, res) => {
     }
 
     // Obtener calendar ID
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     if (!calendarId) {
       console.log(`❌ Calendario ${calendarNumber} no encontrado. Intentando cancelar en todos los calendarios...`);
     } else {
@@ -1516,7 +1531,7 @@ app.post('/api/cancela-cita', async (req, res) => {
 
     // Si no existe el calendario o falló, intentar en todos los calendarios configurados
     if (!cancelResult || !cancelResult.success) {
-      const calendarRows = Array.isArray(sheetData.calendars) ? sheetData.calendars.slice(1) : [];
+      const calendarRows = Array.isArray(configData.calendars) ? configData.calendars.slice(1) : [];
       for (const row of calendarRows) {
         const candidateCalendarId = row && row[1] ? row[1].toString().trim() : '';
         const result = await tryCancelInCalendar(candidateCalendarId);
@@ -1529,12 +1544,12 @@ app.post('/api/cancela-cita', async (req, res) => {
     }
     
     if (cancelResult && cancelResult.success) {
-      // Actualizar estado en Google Sheets
+      // Actualizar estado en base de datos
       try {
         await updateClientStatus(codigoReservaFinal, 'CANCELADA');
-        console.log(`✅ Estado actualizado en Google Sheets: ${codigoReservaFinal} -> CANCELADA`);
+        console.log(`✅ Estado actualizado en MySQL: ${codigoReservaFinal} -> CANCELADA`);
       } catch (updateError) {
-        console.error('❌ Error actualizando Google Sheets:', updateError.message);
+        console.error('❌ Error actualizando MySQL:', updateError.message);
         // No fallar la cancelación por este error
       }
       
@@ -1574,7 +1589,7 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📊 Parámetros: código=${codigo_reserva}, fecha=${fecha_reagendada}, hora=${hora_reagendada}`);
 
-    // PASO 2: Obtener información de la cita desde Google Sheets
+    // PASO 2: Obtener información de la cita desde MySQL
     console.log('📋 Obteniendo información de la cita...');
     const clientData = await getClientDataByReservationCode(codigo_reserva);
     
@@ -1592,16 +1607,16 @@ app.post('/api/reagenda-cita', async (req, res) => {
     const oldTime = clientData.time;
 
     // PASO 3: Obtener configuración de calendario y servicio
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
       console.log('✅ Configuración obtenida correctamente');
     } catch (error) {
       console.error('❌ Error obteniendo configuración:', error.message);
       return res.json({ respuesta: `❌ Error obteniendo configuración: ${error.message}` });
     }
 
-    const calendarId = findData('1', sheetData.calendars, 0, 1);
+    const calendarId = findData('1', configData.calendars, 0, 1);
     if (!calendarId) {
       console.log('❌ Calendario no encontrado');
       return res.json({ respuesta: '🚫 Error: El calendario solicitado no fue encontrado.' });
@@ -1699,7 +1714,7 @@ app.post('/api/reagenda-cita', async (req, res) => {
       console.log('❌ ERROR: Cita demasiado pronto (menos de 1 hora)');
       
       // Encontrar siguiente día hábil
-      const nextWorkingDay = findNextWorkingDay('1', now, sheetData.hours);
+      const nextWorkingDay = findNextWorkingDay('1', now, configData.hours);
       const nextWorkingDayName = formatDateToSpanishPremium(nextWorkingDay.toDate());
       const nextWorkingDateStr = nextWorkingDay.format('YYYY-MM-DD');
       
@@ -1762,8 +1777,8 @@ Agendado por: Agente de WhatsApp`;
 
     console.log('✅ Evento creado exitosamente con ID personalizado');
 
-    // PASO 7: Actualizar fecha y hora en Google Sheets
-    console.log('📝 Actualizando fecha y hora en Google Sheets...');
+    // PASO 7: Actualizar fecha y hora en MySQL
+    console.log('📝 Actualizando fecha y hora en MySQL...');
     const updateDateTimeResult = await updateClientAppointmentDateTime(
       codigo_reserva, 
       fecha_reagendada, 
@@ -1771,9 +1786,9 @@ Agendado por: Agente de WhatsApp`;
     );
 
     if (!updateDateTimeResult) {
-      console.log('⚠️ No se pudo actualizar fecha/hora en Google Sheets');
+      console.log('⚠️ No se pudo actualizar fecha/hora en MySQL');
     } else {
-      console.log('✅ Fecha y hora actualizadas en Google Sheets');
+      console.log('✅ Fecha y hora actualizadas en MySQL');
     }
 
     // PASO 8: Cambiar estado a REAGENDADA
@@ -1867,7 +1882,7 @@ app.post('/api/confirma-cita', async (req, res) => {
 
     console.log(`📊 Código de reserva: ${codigo_reserva}`);
 
-    // PASO 2: Obtener información de la cita desde Google Sheets
+    // PASO 2: Obtener información de la cita desde MySQL
     console.log('📋 Obteniendo información de la cita...');
     const clientData = await getClientDataByReservationCode(codigo_reserva);
     
@@ -1930,7 +1945,7 @@ app.get('/api/debug-cita/:codigo', async (req, res) => {
     const codigoReserva = req.params.codigo;
     console.log(`🔍 === DEBUG DE CITA: ${codigoReserva} ===`);
     
-    // PASO 1: Verificar datos en Google Sheets
+    // PASO 1: Verificar datos en MySQL
     let clientData = null;
     try {
       clientData = await getClientDataByReservationCode(codigoReserva);
@@ -1941,28 +1956,28 @@ app.get('/api/debug-cita/:codigo', async (req, res) => {
     let response = `🔍 DEBUG: ${codigoReserva}\n\n`;
     
     if (!clientData) {
-      response += `❌ PASO 1: No se encontró el código ${codigoReserva} en Google Sheets\n`;
+      response += `❌ PASO 1: No se encontró el código ${codigoReserva} en la base de datos\n`;
       response += `   - Verifica que el código exista en la hoja CLIENTES\n`;
       response += `   - Verifica los permisos de la cuenta de servicio\n`;
       return res.json({ respuesta: response });
     }
     
-    response += `✅ PASO 1: Código encontrado en Google Sheets\n`;
+    response += `✅ PASO 1: Código encontrado en la base de datos\n`;
     response += `   - Cliente: ${clientData.clientName}\n`;
     response += `   - Fecha: ${clientData.date}\n`;
     response += `   - Hora: ${clientData.time}\n`;
     response += `   - Estado: ${clientData.estado}\n\n`;
     
     // PASO 2: Obtener datos del calendario
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
     } catch (error) {
       response += `❌ PASO 2: Error obteniendo configuración: ${error.message}\n`;
       return res.json({ respuesta: response });
     }
     
-    const calendarId = findData('1', sheetData.calendars, 0, 1);
+    const calendarId = findData('1', configData.calendars, 0, 1);
     response += `✅ PASO 2: Calendar ID obtenido: ${calendarId}\n\n`;
     
     // PASO 3: Verificar eventos en la fecha específica
@@ -2036,14 +2051,14 @@ app.get('/api/eventos/:fecha', async (req, res) => {
     console.log(`📅 Consultando eventos del ${fecha}`);
     
     // Obtener calendar ID
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
     } catch (error) {
       return res.json({ respuesta: `❌ Error obteniendo configuración: ${error.message}` });
     }
     
-    const calendarId = findData('1', sheetData.calendars, 0, 1);
+    const calendarId = findData('1', configData.calendars, 0, 1);
     console.log(`📅 Calendar ID: ${calendarId}`);
     
     // Consultar eventos
@@ -2124,28 +2139,70 @@ app.get('/api/eventos/:fecha', async (req, res) => {
 });
 
 /**
- * ENDPOINT 3: ConsultaFechaActual (GET)
- * Obtiene la fecha y hora actual del sistema
+ * ENDPOINT 3: CargaDatosIniciales (GET)
+ * Obtiene la fecha/hora actual y datos del cliente si existe
+ * @param {string} celular - Número de celular del cliente (obligatorio)
  */
-app.get('/api/consulta-fecha-actual', (req, res) => {
+app.get('/api/carga-datos-iniciales', async (req, res) => {
   try {
-    console.log('🕒 === CONSULTA FECHA ACTUAL ===');
+    console.log('📋 === CARGA DATOS INICIALES ===');
+    
+    const { celular } = req.query;
+    
+    // Validar parámetro obligatorio
+    if (!celular) {
+      return res.status(400).json({
+        error: 'Parámetro "celular" es obligatorio',
+        ejemplo: '/api/carga-datos-iniciales?celular=5551234567'
+      });
+    }
+
+    console.log(`📞 Celular recibido: ${celular}`);
+
+    // Obtener fecha y hora actual (funcionalidad original)
     const now = moment().tz(config.timezone.default);
     
+    // Buscar cliente por celular
+    const clienteData = await getClienteByCelular(celular);
+    
+    // Construir informacionClientePrompt
+    let informacionClientePrompt = null;
+    
+    if (clienteData.existe) {
+      informacionClientePrompt = `El cliente se llama ${clienteData.primerNombre}, su correo electrónico es ${clienteData.correo} y su número de celular es ${clienteData.celular}`;
+      console.log(`✅ informacionClientePrompt: ${informacionClientePrompt}`);
+    } else {
+      // Cliente no existe - dejar preparado para lógica futura
+      informacionClientePrompt = null;
+      console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: null`);
+    }
+
     const response = {
+      // Datos originales de fecha/hora
       fechaHora: now.format('dddd, DD [de] MMMM [de] YYYY, HH:mm:ss [GMT]Z'),
       timestamp: now.valueOf(),
-      isoString: now.toISOString()
+      isoString: now.toISOString(),
+      // Nuevo: información del cliente para prompt
+      informacionClientePrompt: informacionClientePrompt,
+      // Metadata del cliente (para uso interno si se necesita)
+      clienteExiste: clienteData.existe,
+      datosCliente: clienteData.existe ? {
+        primerNombre: clienteData.primerNombre,
+        correo: clienteData.correo,
+        celular: clienteData.celular
+      } : null
     };
     
     console.log('✅ Fecha actual:', response.fechaHora);
+    console.log('✅ Cliente existe:', response.clienteExiste);
     return res.json(response);
     
   } catch (error) {
-    console.error('❌ Error obteniendo fecha actual:', error.toString());
-    return res.json(createJsonResponse({ 
-      respuesta: '🤖 Error al obtener la fecha actual.' 
-    }));
+    console.error('❌ Error en carga datos iniciales:', error.toString());
+    return res.status(500).json({ 
+      error: 'Error al cargar datos iniciales',
+      detalle: error.message
+    });
   }
 });
 
@@ -2171,7 +2228,7 @@ app.post('/api/reconocer-cliente', async (req, res) => {
 
     console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
 
-    // Buscar en Google Sheets (la función ya normaliza el número)
+    // Buscar en MySQL (la función ya normaliza el número)
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -2236,7 +2293,7 @@ app.post('/api/verificar-cliente', async (req, res) => {
 
     console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
 
-    // Buscar en Google Sheets (la función ya normaliza el número)
+    // Buscar en MySQL (la función ya normaliza el número)
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -2297,7 +2354,7 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
     console.log(`⏰ Hora seleccionada: ${horaSeleccionada}`);
     console.log(`📅 Fecha seleccionada: ${fechaSeleccionada}`);
 
-    // Buscar en Google Sheets
+    // Buscar en MySQL
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -2408,9 +2465,9 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
     }
 
     // PASO 2: OBTENER CONFIGURACIÓN (lógica original)
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
       console.log('✅ Configuración obtenida correctamente');
     } catch (error) {
       console.error('❌ Error obteniendo configuración:', error.message);
@@ -2421,8 +2478,8 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
       });
     }
 
-    console.log('=== BÚSQUEDA EN SHEETS ===');
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    console.log('=== BÚSQUEDA EN BASE DE DATOS ===');
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     console.log('calendarId encontrado:', calendarId);
     if (!calendarId) {
       console.log(`❌ ERROR: Calendario no encontrado para número: ${calendarNumber}`);
@@ -2433,8 +2490,8 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
       });
     }
 
-    const profesionalName = findData(calendarNumber, sheetData.calendars, 0, 2);
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
+    const profesionalName = findData(calendarNumber, configData.calendars, 0, 2);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
 
     // Obtener nombre del servicio (lógica original)
     let serviceName = serviceNameFromBot;
@@ -2486,11 +2543,11 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
         requiresData: !esClienteExistente
       });
     }
-      const sheetDay = (dayOfWeek === 0) ? 7 : dayOfWeek; // Convertir domingo de 0 a 7
-      const workingHours = findWorkingHours(calendarNumber, sheetDay, sheetData.hours);
+      const dayNum = (dayOfWeek === 0) ? 7 : dayOfWeek; // Convertir domingo de 0 a 7
+      const workingHours = findWorkingHours(calendarNumber, dayNum, configData.hours);
       
       if (!workingHours) {
-        console.log(`❌ ERROR: No hay horarios laborales para el día ${sheetDay}`);
+        console.log(`❌ ERROR: No hay horarios laborales para el día ${dayNum}`);
         return res.json({
           success: false,
           error: 'No hay horarios laborales para el día seleccionado',
@@ -2568,8 +2625,8 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
       });
     }
 
-    // PASO 6: GUARDAR EN GOOGLE SHEETS
-    console.log('=== GUARDANDO DATOS EN GOOGLE SHEETS ===');
+    // PASO 6: GUARDAR EN MYSQL
+    console.log('=== GUARDANDO DATOS EN MYSQL ===');
     
     try {
       await saveClientDataOriginal(
@@ -2584,22 +2641,22 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
         eventId,
         calendarId
       );
-      console.log('✅ Datos guardados en Google Sheets');
+      console.log('✅ Datos guardados en MySQL');
 
-    } catch (sheetsError) {
-      console.error('❌ Error guardando en Google Sheets:', sheetsError.message);
+    } catch (dbError) {
+      console.error('❌ Error guardando en MySQL:', dbError.message);
       
-      // Intentar eliminar el evento del calendario ya que no se pudo guardar en sheets
+      // Intentar eliminar el evento del calendario ya que no se pudo guardar en la base de datos
       try {
         await cancelEventByReservationCodeOriginal(reservationCode, calendarId);
-        console.log('🧹 Evento eliminado del calendario debido a fallo en sheets');
+        console.log('🧹 Evento eliminado del calendario debido a fallo en base de datos');
       } catch (rollbackError) {
         console.error('❌ Error eliminando evento del calendario:', rollbackError.message);
       }
       
       return res.json({
         success: false,
-        error: 'Error guardando datos: ' + sheetsError.message,
+        error: 'Error guardando datos: ' + dbError.message,
         requiresData: !esClienteExistente
       });
     }
@@ -2680,7 +2737,7 @@ app.post('/api/agenda-cita', async (req, res) => {
       clientPhone: clientPhoneFromRequest 
     } = req.body;
 
-    // PASO 0: INTENTAR OBTENER INFORMACIÓN DEL PACIENTE DEL CACHÉ O GOOGLE SHEETS
+    // PASO 0: INTENTAR OBTENER INFORMACIÓN DEL PACIENTE DEL CACHÉ O MYSQL
     let clientName = clientNameFromRequest;
     let clientEmail = clientEmailFromRequest;
     let clientPhone = clientPhoneFromRequest;
@@ -2701,26 +2758,26 @@ app.post('/api/agenda-cita', async (req, res) => {
           console.log(`   - Email actualizado desde caché: ${clientEmail}`);
         }
       } else {
-        // Si no está en caché, intentar desde Google Sheets
-        console.log('📋 Buscando información en Google Sheets...');
+        // Si no está en caché, intentar desde MySQL
+        console.log('📋 Buscando información en MySQL...');
         try {
           const pacientesEncontrados = await consultaDatosPacientePorTelefono(clientPhone);
           if (pacientesEncontrados && pacientesEncontrados.length > 0) {
             const pacienteMasReciente = pacientesEncontrados[0]; // Ya viene ordenado por más reciente
-            console.log('✅ Información encontrada en Google Sheets');
+            console.log('✅ Información encontrada en MySQL');
             if (!clientName || clientName === '') {
               clientName = pacienteMasReciente.nombreCompleto || clientName;
-              console.log(`   - Nombre actualizado desde Sheets: ${clientName}`);
+              console.log(`   - Nombre actualizado desde MySQL: ${clientName}`);
             }
             if (!clientEmail || clientEmail === 'Sin Email' || clientEmail === '') {
               clientEmail = pacienteMasReciente.correoElectronico || clientEmail;
-              console.log(`   - Email actualizado desde Sheets: ${clientEmail}`);
+              console.log(`   - Email actualizado desde MySQL: ${clientEmail}`);
             }
             // Guardar en caché para próximas veces
             savePatientInfo(clientPhone, clientName, clientEmail);
           }
         } catch (error) {
-          console.log('⚠️ Error buscando en Google Sheets:', error.message);
+          console.log('⚠️ Error buscando en MySQL:', error.message);
         }
       }
     }
@@ -2836,9 +2893,9 @@ app.post('/api/agenda-cita', async (req, res) => {
       console.log('❌ ERROR: Cita demasiado pronto (menos de 2 horas)');
       
       // Obtener datos de configuración para sugerir siguiente día hábil
-      let sheetDataForSuggestion;
+      let configDataForSuggestion;
       try {
-        sheetDataForSuggestion = await getSheetData();
+        configDataForSuggestion = await getConfigData();
       } catch (error) {
         console.log('⚠️ No se pudo obtener configuración para sugerencia');
         return res.json({ 
@@ -2847,7 +2904,7 @@ app.post('/api/agenda-cita', async (req, res) => {
       }
       
       // Encontrar siguiente día hábil
-      const nextWorkingDay = findNextWorkingDay(calendarNumber, now, sheetDataForSuggestion.hours);
+      const nextWorkingDay = findNextWorkingDay(calendarNumber, now, configDataForSuggestion.hours);
       const nextWorkingDayName = formatDateToSpanishPremium(nextWorkingDay.toDate());
       const nextWorkingDateStr = nextWorkingDay.format('YYYY-MM-DD');
       
@@ -2857,25 +2914,25 @@ app.post('/api/agenda-cita', async (req, res) => {
     }
 
     // PASO 3: OBTENER CONFIGURACIÓN (lógica original)
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
       console.log('✅ Configuración obtenida correctamente');
     } catch (error) {
       console.error('❌ Error obteniendo configuración:', error.message);
       return res.json({ respuesta: `❌ Error obteniendo configuración: ${error.message}` });
     }
 
-    console.log('=== BÚSQUEDA EN SHEETS ===');
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    console.log('=== BÚSQUEDA EN BASE DE DATOS ===');
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     console.log('calendarId encontrado:', calendarId);
     if (!calendarId) {
       console.log(`❌ ERROR: Calendario no encontrado para número: ${calendarNumber}`);
       return res.json({ respuesta: '🚫 Error: El calendario solicitado no fue encontrado.' });
     }
 
-    const profesionalName = findData(calendarNumber, sheetData.calendars, 0, 2);
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
+    const profesionalName = findData(calendarNumber, configData.calendars, 0, 2);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
 
     // Obtener nombre del servicio (lógica original)
     let serviceName = serviceNameFromBot;
@@ -3076,22 +3133,22 @@ app.post('/api/debug-agenda', async (req, res) => {
     debug.push('✅ Action válida: schedule');
     debug.push(`✅ Datos básicos: calendar=${calendar}, service=${service}, date=${date}, time=${time}`);
     
-    // PASO 2: Configuración de Google Sheets
-    debug.push('\n📊 PASO 2: GOOGLE SHEETS');
-    let sheetData;
+    // PASO 2: Configuración de MySQL
+    debug.push('\n📊 PASO 2: MYSQL');
+    let configData;
     try {
-      sheetData = await getSheetData();
-      debug.push('✅ Google Sheets conectado correctamente');
-      debug.push(`📊 Calendarios encontrados: ${sheetData.calendars ? sheetData.calendars.length : 0}`);
-      debug.push(`📊 Servicios encontrados: ${sheetData.services ? sheetData.services.length : 0}`);
+      configData = await getConfigData();
+      debug.push('✅ MySQL conectado correctamente');
+      debug.push(`📊 Calendarios encontrados: ${configData.calendars ? configData.calendars.length : 0}`);
+      debug.push(`📊 Servicios encontrados: ${configData.services ? configData.services.length : 0}`);
     } catch (error) {
-      debug.push(`❌ Error en Google Sheets: ${error.message}`);
+      debug.push(`❌ Error en MySQL: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
     
     // PASO 3: Buscar Calendar ID
     debug.push('\n📅 PASO 3: CALENDAR ID');
-    const calendarId = findData(calendar, sheetData.calendars, 0, 1);
+    const calendarId = findData(calendar, configData.calendars, 0, 1);
     if (!calendarId) {
       debug.push(`❌ Calendar ID no encontrado para: ${calendar}`);
       return res.json({ debug: debug.join('\n') });
@@ -3100,7 +3157,7 @@ app.post('/api/debug-agenda', async (req, res) => {
     
     // PASO 4: Datos del servicio
     debug.push('\n⚕️ PASO 4: SERVICIO');
-    const serviceDuration = findData(service, sheetData.services, 0, 1);
+    const serviceDuration = findData(service, configData.services, 0, 1);
     if (!serviceDuration) {
       debug.push(`❌ Servicio no encontrado para: ${service}`);
       return res.json({ debug: debug.join('\n') });
@@ -3206,115 +3263,101 @@ app.post('/api/test-email', async (req, res) => {
 });
 
 /**
- * ENDPOINT: Diagnóstico específico de Google Sheets
+ * ENDPOINT: Diagnóstico específico de MySQL
  */
-app.post('/api/debug-sheets', async (req, res) => {
+app.post('/api/debug-mysql', async (req, res) => {
   const debug = [];
   
   try {
-    debug.push('🔍 === DIAGNÓSTICO GOOGLE SHEETS ===');
+    debug.push('🔍 === DIAGNÓSTICO MYSQL ===');
     debug.push(`⏰ Timestamp: ${new Date().toISOString()}`);
     
     // PASO 1: Verificar configuración
     debug.push('\n📋 PASO 1: VERIFICAR CONFIGURACIÓN');
-    debug.push(`🆔 GOOGLE_CLIENT_EMAIL: ${config.google.clientEmail ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`🔑 GOOGLE_PRIVATE_KEY: ${config.google.privateKey ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`📊 GOOGLE_PROJECT_ID: ${config.google.projectId ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`📋 SHEET_ID: ${config.business.sheetId}`);
+    debug.push(`🖥️ MYSQL_HOST: ${config.mysql.host ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`🔌 MYSQL_PORT: ${config.mysql.port ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`👤 MYSQL_USER: ${config.mysql.user ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`🔑 MYSQL_PASSWORD: ${config.mysql.password ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`📊 MYSQL_DATABASE: ${config.mysql.database}`);
     
-    if (!config.google.clientEmail || !config.google.privateKey || !config.google.projectId) {
+    if (!config.mysql.host || !config.mysql.user || !config.mysql.password) {
       debug.push('\n❌ CONFIGURACIÓN INCOMPLETA - Falta información en .env');
       return res.json({ debug: debug.join('\n') });
     }
     
-    // PASO 2: Probar conexión a Google Sheets
-    debug.push('\n📊 PASO 2: CONEXIÓN GOOGLE SHEETS');
-    let sheets;
+    // PASO 2: Probar conexión a MySQL
+    debug.push('\n📊 PASO 2: CONEXIÓN MYSQL');
     try {
-      const { getSheetsInstance } = require('./services/googleAuth');
-      sheets = await getSheetsInstance();
-      debug.push('✅ Conexión a Google Sheets exitosa');
-    } catch (error) {
-      debug.push(`❌ Error conectando a Google Sheets: ${error.message}`);
-      return res.json({ debug: debug.join('\n') });
-    }
-    
-    // PASO 3: Probar acceso al spreadsheet específico
-    debug.push('\n📋 PASO 3: ACCESO AL SPREADSHEET');
-    try {
-      const sheetResponse = await sheets.spreadsheets.get({
-        spreadsheetId: config.business.sheetId
-      });
-      debug.push(`✅ Spreadsheet encontrado: "${sheetResponse.data.properties.title}"`);
-      debug.push(`📊 Hojas disponibles: ${sheetResponse.data.sheets.map(s => s.properties.title).join(', ')}`);
-    } catch (error) {
-      debug.push(`❌ Error accediendo al spreadsheet: ${error.message}`);
-      if (error.message.includes('permission')) {
-        debug.push('💡 SOLUCIÓN: La cuenta de servicio necesita permisos de Editor en el Google Sheet');
-      } else if (error.message.includes('not found')) {
-        debug.push('💡 SOLUCIÓN: Verificar que el SHEET_ID sea correcto');
+      const connectionSuccess = await testConnection();
+      if (connectionSuccess) {
+        debug.push('✅ Conexión a MySQL exitosa');
+      } else {
+        debug.push('❌ Error conectando a MySQL');
+        return res.json({ debug: debug.join('\n') });
       }
-      return res.json({ debug: debug.join('\n') });
-    }
-    
-    // PASO 4: Verificar/crear hoja CLIENTES
-    debug.push('\n👥 PASO 4: HOJA CLIENTES');
-    try {
-      await ensureClientsSheet(sheets);
-      debug.push('✅ Hoja CLIENTES verificada/creada');
     } catch (error) {
-      debug.push(`❌ Error con hoja CLIENTES: ${error.message}`);
+      debug.push(`❌ Error conectando a MySQL: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
     
-    // PASO 5: Probar escritura real
-    debug.push('\n✏️ PASO 5: PRUEBA DE ESCRITURA');
+    // PASO 3: Verificar tablas
+    debug.push('\n📋 PASO 3: VERIFICAR TABLAS');
     try {
-      const testData = [
-        new Date().toISOString(),
-        'TEST123',
-        'Usuario Test',
-        '5551234567', 
-        'test@example.com',
-        'Dr. Test',
-        '2025-12-01',
-        '15:00',
-        'Consulta Test',
-        'CONFIRMADA'
-      ];
+      const { query } = require('./services/mysqlService');
+      const tables = await query('SHOW TABLES');
+      const tableNames = tables.map(t => Object.values(t)[0]);
+      debug.push(`✅ Tablas encontradas: ${tableNames.join(', ')}`);
       
-      const writeResponse = await sheets.spreadsheets.values.append({
-        spreadsheetId: config.business.sheetId,
-        range: 'CLIENTES!A:J',
-        valueInputOption: 'RAW',
-        resource: {
-          values: [testData]
-        }
-      });
+      // Verificar tablas requeridas
+      const requiredTables = ['Clientes', 'Especialistas', 'Servicios', 'Horarios', 'Calendario', 'Citas'];
+      const missingTables = requiredTables.filter(t => !tableNames.some(tn => tn.toLowerCase() === t.toLowerCase()));
       
-      debug.push('✅ Escritura exitosa!');
-      debug.push(`📊 Fila agregada: ${writeResponse.data.updates.updatedRows} fila(s)`);
-      debug.push(`📋 Rango actualizado: ${writeResponse.data.updates.updatedRange}`);
+      if (missingTables.length > 0) {
+        debug.push(`⚠️ Tablas faltantes: ${missingTables.join(', ')}`);
+      } else {
+        debug.push('✅ Todas las tablas requeridas existen');
+      }
+    } catch (error) {
+      debug.push(`❌ Error verificando tablas: ${error.message}`);
+      return res.json({ debug: debug.join('\n') });
+    }
+    
+    // PASO 4: Contar registros
+    debug.push('\n📊 PASO 4: CONTAR REGISTROS');
+    try {
+      const { query } = require('./services/mysqlService');
       
-      debug.push('\n🎉 ¡GOOGLE SHEETS FUNCIONA COMPLETAMENTE!');
-      debug.push('💡 Si no ves datos en tu sheet, verifica que estés viendo la hoja correcta');
+      const [clientes] = await query('SELECT COUNT(*) as count FROM Clientes');
+      const [especialistas] = await query('SELECT COUNT(*) as count FROM Especialistas');
+      const [servicios] = await query('SELECT COUNT(*) as count FROM Servicios');
+      const [horarios] = await query('SELECT COUNT(*) as count FROM Horarios');
+      const [calendarios] = await query('SELECT COUNT(*) as count FROM Calendario');
+      const [citas] = await query('SELECT COUNT(*) as count FROM Citas');
+      
+      debug.push(`   - Clientes: ${clientes.count} registros`);
+      debug.push(`   - Especialistas: ${especialistas.count} registros`);
+      debug.push(`   - Servicios: ${servicios.count} registros`);
+      debug.push(`   - Horarios: ${horarios.count} registros`);
+      debug.push(`   - Calendarios: ${calendarios.count} registros`);
+      debug.push(`   - Citas: ${citas.count} registros`);
+      
+      debug.push('\n🎉 ¡MYSQL FUNCIONA COMPLETAMENTE!');
       
       return res.json({ 
         debug: debug.join('\n'),
         success: true,
-        sheetUrl: `https://docs.google.com/spreadsheets/d/${config.business.sheetId}`
+        stats: {
+          clientes: clientes.count,
+          especialistas: especialistas.count,
+          servicios: servicios.count,
+          horarios: horarios.count,
+          calendarios: calendarios.count,
+          citas: citas.count
+        }
       });
       
     } catch (error) {
-      debug.push(`❌ Error en escritura: ${error.message}`);
-      
-      if (error.message.includes('permission')) {
-        debug.push('\n💡 PROBLEMA DE PERMISOS:');
-        debug.push(`   1. Ve a: https://docs.google.com/spreadsheets/d/${config.business.sheetId}`);
-        debug.push(`   2. Compartir → Agregar → ${config.google.clientEmail}`);
-        debug.push(`   3. Permisos: Editor (NO solo visualizador)`);
-      }
-      
+      debug.push(`❌ Error contando registros: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
     
@@ -3346,18 +3389,18 @@ app.get('/api/debug-martes-30', async (req, res) => {
     debug.push(`⏰ Hora actual: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm')}`);
     
     // Obtener datos
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
-      debug.push(`✅ Google Sheets: CONECTADO`);
+      configData = await getConfigData();
+      debug.push(`✅ MySQL: CONECTADO`);
     } catch (error) {
-      sheetData = developmentMockData;
-      debug.push(`⚠️ Google Sheets: ERROR - Usando Mock`);
+      configData = developmentMockData;
+      debug.push(`⚠️ MySQL: ERROR - Usando Mock`);
       debug.push(`   Error: ${error.message}`);
     }
     
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     
     debug.push(`📊 Configuración obtenida:`);
     debug.push(`   - Calendar ID: ${calendarId?.substring(0, 40)}...`);
@@ -3365,12 +3408,12 @@ app.get('/api/debug-martes-30', async (req, res) => {
     
     // Verificar día laboral
     const jsDay = targetMoment.toDate().getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
+    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
     
     debug.push(`\n🕒 Verificación día laboral:`);
     debug.push(`   - JS Day: ${jsDay} (0=Dom, 1=Lun, 2=Mar, 3=Mié, 4=Jue, 5=Vie, 6=Sáb)`);
-    debug.push(`   - Sheet Day: ${sheetDayNumber}`);
+    debug.push(`   - Day Number: ${dayNumber}`);
     debug.push(`   - Working Hours encontrado: ${workingHours ? 'SÍ' : 'NO'}`);
     
     if (!workingHours) {
@@ -3403,7 +3446,7 @@ app.get('/api/debug-martes-30', async (req, res) => {
     debug.push(`\n🎯 === LLAMANDO A checkDayAvailability ===`);
     
     try {
-      const dayResult = await checkDayAvailability(targetMoment, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+      const dayResult = await checkDayAvailability(targetMoment, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
       
       debug.push(`📊 Resultado checkDayAvailability:`);
       if (dayResult && dayResult.hasAvailability) {
@@ -3484,17 +3527,17 @@ app.get('/api/debug-dia/:fecha', async (req, res) => {
     debug.push(`================================`);
     
     // Obtener datos
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
-      debug.push(`✅ Google Sheets: CONECTADO`);
+      configData = await getConfigData();
+      debug.push(`✅ MySQL: CONECTADO`);
     } catch (error) {
-      sheetData = developmentMockData;
-      debug.push(`⚠️ Google Sheets: ERROR - Usando Mock`);
+      configData = developmentMockData;
+      debug.push(`⚠️ MySQL: ERROR - Usando Mock`);
     }
     
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     
     debug.push(`📊 Configuración:`);
     debug.push(`   - Calendar ID: ${calendarId?.substring(0, 40)}...`);
@@ -3502,8 +3545,8 @@ app.get('/api/debug-dia/:fecha', async (req, res) => {
     
     // Verificar día laboral
     const jsDay = targetMoment.toDate().getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
+    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
     
     debug.push(`\n🕒 Verificación día laboral:`);
     debug.push(`   - Día de semana: ${targetMoment.format('dddd')} (${dayOfWeek})`);
@@ -3542,7 +3585,7 @@ app.get('/api/debug-dia/:fecha', async (req, res) => {
     debug.push(`\n🎯 === LLAMANDO A checkDayAvailability ===`);
     
     try {
-      const dayResult = await checkDayAvailability(targetMoment, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+      const dayResult = await checkDayAvailability(targetMoment, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
       
       debug.push(`📊 Resultado checkDayAvailability:`);
       if (dayResult && dayResult.hasAvailability) {
@@ -3621,19 +3664,19 @@ app.get('/api/debug-slots/:fecha', async (req, res) => {
     let resultado = `🔧 DEBUG SLOTS MEJORADO: ${fecha}\n\n`;
     
     // Obtener datos
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
-      resultado += `✅ Google Sheets conectado\n`;
+      configData = await getConfigData();
+      resultado += `✅ MySQL conectado\n`;
     } catch (error) {
-      sheetData = developmentMockData;
+      configData = developmentMockData;
       resultado += `⚠️ Usando datos simulados\n`;
     }
     
     // Obtener configuración
     const jsDay = targetMoment.toDate().getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours(calendarNumber, sheetDayNumber, sheetData.hours);
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
+    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
     
     if (!workingHours) {
       return res.json({ 
@@ -3715,18 +3758,18 @@ app.get('/api/debug-busqueda-alternativos/:fechaObjetivo', async (req, res) => {
     debug.push(`================================\n`);
     
     // Obtener datos
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
-      debug.push(`✅ Google Sheets conectado`);
+      configData = await getConfigData();
+      debug.push(`✅ MySQL conectado`);
     } catch (error) {
-      sheetData = developmentMockData;
+      configData = developmentMockData;
       debug.push(`⚠️ Usando Mock data`);
     }
     
     const today = moment().tz(config.timezone.default).startOf('day');
-    const serviceDuration = findData(serviceNumber, sheetData.services, 0, 1);
-    const calendarId = findData(calendarNumber, sheetData.calendars, 0, 1);
+    const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     
     debug.push(`📊 Configuración:`);
     debug.push(`   - Hoy: ${today.format('YYYY-MM-DD')}`);
@@ -3744,7 +3787,7 @@ app.get('/api/debug-busqueda-alternativos/:fechaObjetivo', async (req, res) => {
       debug.push(`\n📅 Evaluando día +${dayOffset}: ${nextDay.format('YYYY-MM-DD')} (${nextDay.format('dddd')})`);
       
       try {
-        const nextResult = await checkDayAvailability(nextDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+        const nextResult = await checkDayAvailability(nextDay, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
         
         if (nextResult && nextResult.hasAvailability) {
           debug.push(`   ✅ TIENE disponibilidad:`);
@@ -3792,7 +3835,7 @@ app.get('/api/debug-busqueda-alternativos/:fechaObjetivo', async (req, res) => {
         
         if (previousDay.isSameOrAfter(today, 'day')) {
           try {
-            const prevResult = await checkDayAvailability(previousDay, calendarNumber, serviceNumber, sheetData, calendarId, serviceDuration);
+            const prevResult = await checkDayAvailability(previousDay, calendarNumber, serviceNumber, configData, calendarId, serviceDuration);
             
             if (prevResult && prevResult.hasAvailability && prevResult.stats.availableSlots >= 2) {
               alternativeDays.push({
@@ -3859,11 +3902,11 @@ app.get('/api/test-alternativos/:fecha', async (req, res) => {
     const targetDate = targetMoment.toDate();
     
     // Obtener datos
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
     } catch (error) {
-      sheetData = developmentMockData;
+      configData = developmentMockData;
     }
     
     console.log(`🔍 Llamando directamente a findAlternativeDaysWithAvailability...`);
@@ -3871,7 +3914,7 @@ app.get('/api/test-alternativos/:fecha', async (req, res) => {
       targetMoment, 
       calendarNumber, 
       serviceNumber, 
-      sheetData
+      configData
     );
     
     if (alternativeDays.length === 0) {
@@ -3958,15 +4001,15 @@ app.get('/api/debug-horarios/:fecha', async (req, res) => {
     console.log(`🔍 === DEBUG DETALLADO HORARIOS: ${fecha} ===`);
     
     // Obtener datos de configuración
-    let sheetData;
+    let configData;
     try {
-      sheetData = await getSheetData();
+      configData = await getConfigData();
     } catch (error) {
       return res.json({ error: `❌ Error obteniendo configuración: ${error.message}` });
     }
     
-    const calendarId = findData('1', sheetData.calendars, 0, 1);
-    const serviceDuration = findData('1', sheetData.services, 0, 1);
+    const calendarId = findData('1', configData.calendars, 0, 1);
+    const serviceDuration = findData('1', configData.services, 0, 1);
     
     console.log(`📊 Calendar ID: ${calendarId}`);
     console.log(`⏱️ Duración servicio: ${serviceDuration} minutos`);
@@ -3974,11 +4017,11 @@ app.get('/api/debug-horarios/:fecha', async (req, res) => {
     // Crear moment para la fecha
     const targetMoment = moment.tz(fecha, 'YYYY-MM-DD', config.timezone.default);
     const jsDay = targetMoment.toDate().getDay();
-    const sheetDayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours('1', sheetDayNumber, sheetData.hours);
+    const dayNumber = (jsDay === 0) ? 7 : jsDay;
+    const workingHours = findWorkingHours('1', dayNumber, configData.hours);
     
     let resultado = `🔍 DEBUG HORARIOS: ${fecha}\n\n`;
-    resultado += `📅 Día de la semana: ${targetMoment.format('dddd')} (JS: ${jsDay}, Sheet: ${sheetDayNumber})\n`;
+    resultado += `📅 Día de la semana: ${targetMoment.format('dddd')} (JS: ${jsDay}, DB: ${dayNumber})\n`;
     resultado += `⏰ Horario laboral: ${workingHours ? workingHours.start + ':00 - ' + workingHours.end + ':00' : 'No definido'}\n\n`;
     
     if (!workingHours) {
@@ -4080,7 +4123,7 @@ app.get('/api/debug-horarios/:fecha', async (req, res) => {
 
 /**
  * ENDPOINT: Consultar datos de paciente por número telefónico
- * Busca información del paciente en Google Sheets usando el número de teléfono
+ * Busca información del paciente en MySQL usando el número de teléfono
  */
 app.get('/api/consulta-datos-paciente', async (req, res) => {
   try {
@@ -4111,15 +4154,15 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
     console.log(`🔍 Buscando paciente con teléfono: ${telefono}`);
     console.log(`📞 Teléfono normalizado: ${telefonoLimpio}`);
 
-    // Buscar datos del paciente en Google Sheets
+    // Buscar datos del paciente en MySQL
     let pacientesEncontrados;
     try {
       pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     } catch (error) {
-      console.error('❌ Error consultando Google Sheets:', error.message);
+      console.error('❌ Error consultando MySQL:', error.message);
       return res.json({
         success: false,
-        message: '❌ Error interno: No se pudieron consultar los datos. Verifique la configuración de Google Sheets.',
+        message: '❌ Error interno: No se pudieron consultar los datos. Verifique la configuración de MySQL.',
         data: []
       });
     }
@@ -4134,13 +4177,14 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
       });
     }
 
-    // Formatear datos de respuesta - solo nombre completo y correo electrónico
+    // Formatear datos de respuesta - solo primer nombre y correo electrónico
     const datosFormateados = pacientesEncontrados.map(paciente => {
       const nombreCompleto = paciente.nombreCompleto || '';
+      const primerNombre = nombreCompleto.split(' ')[0]; // Solo el primer nombre
       const correoElectronico = paciente.correoElectronico || '';
       
       return {
-        nombreCompleto: nombreCompleto,
+        primerNombre: primerNombre,
         correoElectronico: correoElectronico,
         telefono: paciente.telefono,
         fechaUltimaRegistro: paciente.fechaRegistro
@@ -4149,7 +4193,7 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
 
     // Filtrar solo registros que tengan al menos nombre o correo
     const datosValidos = datosFormateados.filter(paciente => 
-      paciente.nombreCompleto.trim() !== '' || paciente.correoElectronico.trim() !== ''
+      paciente.primerNombre.trim() !== '' || paciente.correoElectronico.trim() !== ''
     );
 
     if (datosValidos.length === 0) {
@@ -4436,7 +4480,7 @@ const swaggerDocument = {
     '/api/reagenda-cita': {
       post: {
         summary: 'Reagenda una cita existente',
-        description: 'Reagenda una cita a una nueva fecha y hora usando el código de reserva. Elimina el evento anterior del calendario, crea uno nuevo, actualiza los datos en Google Sheets y envía correo de confirmación.',
+        description: 'Reagenda una cita a una nueva fecha y hora usando el código de reserva. Elimina el evento anterior del calendario, crea uno nuevo, actualiza los datos en MySQL y envía correo de confirmación.',
         requestBody: {
           required: true,
           content: {
@@ -4488,7 +4532,7 @@ const swaggerDocument = {
     '/api/confirma-cita': {
       post: {
         summary: 'Confirma una cita existente',
-        description: 'Confirma la asistencia del cliente a una cita programada usando el código de reserva. Actualiza el estado de la cita a CONFIRMADA en Google Sheets.',
+        description: 'Confirma la asistencia del cliente a una cita programada usando el código de reserva. Actualiza el estado de la cita a CONFIRMADA en MySQL.',
         requestBody: {
           required: true,
           content: {
@@ -4528,13 +4572,22 @@ const swaggerDocument = {
         tags: ['Citas']
       }
     },
-    '/api/consulta-fecha-actual': {
+    '/api/carga-datos-iniciales': {
       get: {
-        summary: 'Obtiene la fecha y hora actual',
-        description: 'Devuelve la fecha y hora actual del sistema en zona horaria configurada',
+        summary: 'Carga datos iniciales y busca cliente',
+        description: 'Devuelve fecha/hora actual e información del cliente si existe en la base de datos',
+        parameters: [
+          {
+            name: 'celular',
+            in: 'query',
+            required: true,
+            description: 'Número de celular del cliente',
+            schema: { type: 'string', example: '5551234567' }
+          }
+        ],
         responses: {
           '200': {
-            description: 'Fecha y hora actual',
+            description: 'Datos iniciales cargados',
             content: {
               'application/json': {
                 schema: {
@@ -4542,7 +4595,32 @@ const swaggerDocument = {
                   properties: {
                     fechaHora: { type: 'string', example: 'martes, 26 de agosto de 2025, 17:25:48 GMT-5' },
                     timestamp: { type: 'integer', example: 1756247148133 },
-                    isoString: { type: 'string', example: '2025-08-26T22:25:48.133Z' }
+                    isoString: { type: 'string', example: '2025-08-26T22:25:48.133Z' },
+                    informacionClientePrompt: { type: 'string', example: 'El cliente se llama Juan, su correo electrónico es juan@ejemplo.com y su número de celular es 5551234567', nullable: true },
+                    clienteExiste: { type: 'boolean', example: true },
+                    datosCliente: { 
+                      type: 'object',
+                      nullable: true,
+                      properties: {
+                        primerNombre: { type: 'string', example: 'Juan' },
+                        correo: { type: 'string', example: 'juan@ejemplo.com' },
+                        celular: { type: 'string', example: '5551234567' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': {
+            description: 'Parámetro celular faltante',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    error: { type: 'string', example: 'Parámetro "celular" es obligatorio' },
+                    ejemplo: { type: 'string', example: '/api/carga-datos-iniciales?celular=5551234567' }
                   }
                 }
               }
@@ -4664,10 +4742,10 @@ const swaggerDocument = {
         }
       }
     },
-    '/api/debug-sheets': {
+    '/api/debug-mysql': {
       post: {
-        summary: 'Diagnóstico específico de Google Sheets',
-        description: 'Endpoint para verificar la conexión y configuración de Google Sheets',
+        summary: 'Diagnóstico específico de MySQL',
+        description: 'Endpoint para verificar la conexión y configuración de MySQL',
         requestBody: {
           required: false,
           content: {
@@ -4683,13 +4761,13 @@ const swaggerDocument = {
         },
         responses: {
           '200': {
-            description: 'Respuesta de diagnóstico de Google Sheets',
+            description: 'Respuesta de diagnóstico de MySQL',
             content: {
               'application/json': {
                 schema: {
                   oneOf: [
                     {
-                      title: 'Google Sheets Funcionando',
+                      title: 'MySQL Funcionando',
                       type: 'object',
                       properties: {
                         debug: { 
@@ -4699,15 +4777,11 @@ const swaggerDocument = {
                         success: { 
                           type: 'boolean',
                           example: true 
-                        },
-                        sheetUrl: { 
-                          type: 'string',
-                          example: 'https://docs.google.com/spreadsheets/d/1234567890abcdef1234567890abcdef1234567890'
                         }
                       }
                     },
                     {
-                      title: 'Google Sheets con Problemas',
+                      title: 'MySQL con Problemas',
                       type: 'object',
                       properties: {
                         debug: { 
@@ -4727,7 +4801,7 @@ const swaggerDocument = {
     '/api/consulta-datos-paciente': {
       get: {
         summary: 'Consultar datos de paciente por número telefónico',
-        description: 'Busca información del paciente en Google Sheets usando el número de teléfono',
+        description: 'Busca información del paciente en MySQL usando el número de teléfono. Devuelve solo el primer nombre del cliente.',
         parameters: [
           {
             name: 'telefono',
@@ -4746,16 +4820,16 @@ const swaggerDocument = {
                   type: 'object',
                   properties: {
                     success: { type: 'boolean', example: true },
-                    message: { type: 'string', example: 'Datos del paciente encontrados exitosamente' },
+                    message: { type: 'string', example: '✅ Se encontró 1 registro para el teléfono 5551234567' },
                     data: {
                       type: 'array',
                       items: {
                         type: 'object',
                         properties: {
-                          nombreCompleto: { type: 'string', example: 'Juan Pérez' },
+                          primerNombre: { type: 'string', example: 'Juan' },
                           correoElectronico: { type: 'string', example: 'juan.perez@ejemplo.com' },
                           telefono: { type: 'string', example: '5551234567' },
-                          fechaUltimaRegistro: { type: 'string', example: '2025-12-01' }
+                          fechaUltimaRegistro: { type: 'string', example: '2026-02-08T03:17:19.000Z' }
                         }
                       }
                     },
@@ -4935,11 +5009,70 @@ cron.schedule('0 9 * * *', async () => {
   }
 });
 
+/**
+ * Cron Job: Verificar citas próximas en 15 minutos
+ * Se ejecuta cada 5 minutos
+ * Envía notificación 15 minutos antes de la cita
+ */
+cron.schedule('*/5 * * * *', async () => {
+  try {
+    console.log('⏰ === CRON: VERIFICANDO CITAS PRÓXIMAS (15 MIN) ===');
+    console.log(`🕒 Ejecutado a las: ${moment().tz(config.timezone.default).format('YYYY-MM-DD HH:mm:ss')}`);
+    
+    const appointments = await getUpcomingAppointments15min();
+    
+    if (appointments.length === 0) {
+      console.log('✅ No hay citas en los próximos 15 minutos');
+      return;
+    }
+    
+    console.log(`📊 Citas encontradas: ${appointments.length}`);
+    
+    // Enviar recordatorios por WhatsApp y Email
+    for (const appointment of appointments) {
+      console.log(`\n📤 Enviando recordatorio 15min a: ${appointment.clientName}`);
+      console.log(`🎟️ Código de reserva: ${appointment.codigoReserva}`);
 
+      // Enviar WhatsApp
+      if (appointment.clientPhone) {
+        const { generateWhatsAppMessage15min } = require('./services/reminderService');
+        const message = generateWhatsAppMessage15min(appointment);
+        const { sendWhatsAppMessage } = require('./services/whatsappService');
+        const whatsappResult = await sendWhatsAppMessage(appointment.clientPhone, message);
+        
+        if (whatsappResult.success) {
+          console.log(`✅ WhatsApp 15min enviado exitosamente a ${appointment.clientPhone}`);
+        } else {
+          console.log(`⚠️ Error enviando WhatsApp 15min: ${whatsappResult.error}`);
+        }
+      }
 
-console.log('✅ Cron job de recordatorios ACTIVADO');
+      // Enviar Email
+      if (appointment.clientEmail) {
+        try {
+          const { sendReminder15min } = require('./services/emailService');
+          if (sendReminder15min) {
+            const emailResult = await sendReminder15min(appointment);
+            if (emailResult && emailResult.success) {
+              console.log(`✅ Email 15min enviado exitosamente a ${appointment.clientEmail}`);
+            }
+          }
+        } catch (emailError) {
+          console.log(`⚠️ Error enviando email 15min: ${emailError.message}`);
+        }
+      }
+    }
+    
+    console.log('✅ Recordatorios de 15 minutos enviados');
+    
+  } catch (error) {
+    console.error('❌ Error en cron de 15min:', error.message);
+  }
+});
+
+console.log('✅ Cron jobs de recordatorios ACTIVADOS');
 console.log('   - Recordatorio 24h: ACTIVADO (una vez al día a las 9 AM)');
-console.log('   - Recordatorios 12h y 15min: DESACTIVADOS');
+console.log('   - Recordatorio 15min: ACTIVADO (cada 5 minutos)');
 
 app.listen(PORT, () => {
   const serverUrl = getServerUrl();
@@ -4954,10 +5087,10 @@ app.listen(PORT, () => {
   console.log(`   POST ${serverUrl}/api/cancela-cita`);
   console.log(`   POST ${serverUrl}/api/reagenda-cita`);
   console.log(`   POST ${serverUrl}/api/confirma-cita`);
-  console.log(`   GET  ${serverUrl}/api/consulta-fecha-actual`);
+  console.log(`   GET  ${serverUrl}/api/carga-datos-iniciales?celular={numero}`);
   console.log(`   GET  ${serverUrl}/api/eventos/:fecha`);
   console.log(`   POST ${serverUrl}/api/debug-agenda`);
-  console.log(`   POST ${serverUrl}/api/debug-sheets`);
+  console.log(`   POST ${serverUrl}/api/debug-mysql`);
   console.log(`   POST ${serverUrl}/api/test-email`);
       console.log(`   GET  ${serverUrl}/api/consulta-datos-paciente`);
   console.log(`   GET  ${serverUrl}/api/test-alternativos/:fecha`);
@@ -4968,7 +5101,7 @@ app.listen(PORT, () => {
     console.log(`   GET  ${serverUrl}/api/debug-horarios/:fecha`);
   console.log(`\n🔧 Configuración:`);
   console.log(`   - Timezone: ${config.timezone.default}`);
-  console.log(`   - Google Sheet ID: ${config.business.sheetId}`);
+  console.log(`   - MySQL Database: ${config.mysql.database}`);
   console.log(`   - Google Auth: ${config.google.clientEmail ? '✅ Configurado' : '❌ Pendiente'}`);
   
   if (isProduction) {

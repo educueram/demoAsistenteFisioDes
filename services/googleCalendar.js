@@ -1116,7 +1116,7 @@ async function findEventByClientName(calendarId, clientName, targetDate) {
 
 /**
  * Cancelar evento por datos específicos (fecha, hora, calendario)
- * LÓGICA CORRECTA: Usar datos del Google Sheets para encontrar evento exacto
+ * Usa datos del cliente para encontrar evento exacto
  */
 async function cancelEventByDateAndTime(calendarId, targetDate, targetTime, clientName = null) {
   try {
@@ -1371,7 +1371,7 @@ async function cancelEventByReservationCodeOriginal(calendarId, codigoReserva) {
 /**
  * Función principal de cancelación usando la lógica correcta
  */
-async function cancelEventUsingSheetData(calendarId, codigoReserva, clientData) {
+async function cancelEventUsingClientData(calendarId, codigoReserva, clientData) {
   try {
     console.log(`🔧 === CANCELACIÓN CON LÓGICA CORRECTA ===`);
     console.log(`📋 Código de reserva: ${codigoReserva}`);
@@ -1381,14 +1381,14 @@ async function cancelEventUsingSheetData(calendarId, codigoReserva, clientData) 
       return false;
     }
     
-    console.log(`📊 Datos obtenidos de Google Sheets:`);
+    console.log(`📊 Datos obtenidos de MySQL:`);
     console.log(`   - Cliente: ${clientData.clientName}`);
     console.log(`   - Fecha: ${clientData.date}`);
     console.log(`   - Hora: ${clientData.time}`);
     console.log(`   - Estado actual: ${clientData.estado}`);
     
     if (clientData.estado === 'CANCELADA') {
-      console.log(`⚠️ La cita ya está marcada como CANCELADA en Google Sheets`);
+      console.log(`⚠️ La cita ya está marcada como CANCELADA en MySQL`);
       console.log(`🔄 Pero continuaremos verificando si el evento aún existe en Google Calendar...`);
     }
     
@@ -1403,7 +1403,7 @@ async function cancelEventUsingSheetData(calendarId, codigoReserva, clientData) 
     return success;
     
   } catch (error) {
-    console.error('💥 Error en cancelación con datos del sheet:', error.message);
+    console.error('💥 Error en cancelación con datos de MySQL:', error.message);
     return false;
   }
 }
@@ -1774,7 +1774,7 @@ module.exports = {
   checkTimeConflict,
   createEvent,
   cancelEventByDateAndTime,
-  cancelEventUsingSheetData,
+  cancelEventUsingClientData,
   findEventByClientName,
   formatTime,
   generateReservationCodeOriginal,

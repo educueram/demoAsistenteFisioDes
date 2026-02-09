@@ -1,6 +1,5 @@
 /**
  * Configuración centralizada de la aplicación Demo Asistente Fisio API
- * Migrada desde Google Apps Script
  */
 
 // Cargar variables de entorno desde .env
@@ -13,9 +12,17 @@ const config = {
     host: process.env.HOST || 'localhost'
   },
 
-  // Configuración del negocio (migrada desde BUSINESS_CONFIG)
+  // Configuración de MySQL
+  mysql: {
+    host: process.env.MYSQLHOST || 'localhost',
+    port: parseInt(process.env.MYSQLPORT) || 3306,
+    user: process.env.MYSQLUSER || 'root',
+    password: process.env.MYSQLPASSWORD || '',
+    database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || 'railway'
+  },
+
+  // Configuración del negocio
   business: {
-    sheetId: process.env.GOOGLE_SHEET_ID ||'1LcyYRhURAKZPaZDNo6GHqNQDbslmt8okljrcRW7lHNE',
     email: process.env.BUSINESS_EMAIL || 'pruebasmiptech@gmail.com',
     name: process.env.BUSINESS_NAME || 'Demo Asistente Fisio',
     phone: process.env.BUSINESS_PHONE || '+52 5555555555',
@@ -27,13 +34,12 @@ const config = {
     default: process.env.TIMEZONE || 'America/Mexico_City'
   },
 
-  // Configuración de Google APIs
+  // Configuración de Google APIs (solo Calendar)
   google: {
     privateKey: process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
     clientEmail: process.env.GOOGLE_CLIENT_EMAIL || 'demosmiptech@demos-474116.iam.gserviceaccount.com',
     projectId: process.env.GOOGLE_PROJECT_ID || 'demos-474116',
     scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
       'https://www.googleapis.com/auth/calendar'
     ]
   },
@@ -51,12 +57,14 @@ const config = {
     }
   },
 
-  // Nombres de las hojas de Google Sheets (migrado desde SHEETS)
-  sheets: {
-    calendars: 'CALENDARIOS',
-    hours: 'HORARIOS', 
-    services: 'SERVICIOS',
-    clients: 'CLIENTES'
+  // Nombres de tablas MySQL
+  tables: {
+    calendars: 'Calendario',
+    hours: 'Horarios', 
+    services: 'Servicios',
+    clients: 'Clientes',
+    appointments: 'Citas',
+    specialists: 'Especialistas'
   },
 
   // Configuración de WhatsApp Bot (migrada desde BBC_CONFIG)
@@ -65,7 +73,6 @@ const config = {
     apiKey: process.env.BBC_API_KEY || 'bb-61468363-0112-4d0d-8732-d2977c0c84ec'
   },
 
-  // Configuraciones de validación
   // Configuración de SMTP para emails
   smtp: {
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
@@ -74,34 +81,32 @@ const config = {
     pass: process.env.SMTP_PASS || '' // Debe ser App Password de Gmail
   },
 
-  // Configuración de horarios de trabajo (NUEVA)
+  // Configuración de horarios de trabajo
   workingHours: {
-    // Forzar horarios específicos (independiente de Google Sheets)
     forceFixedSchedule: process.env.FORCE_FIXED_SCHEDULE === 'true' || process.env.NODE_ENV === 'production',
-    startHour: parseInt(process.env.WORKING_START_HOUR) || 10,   // 10 AM (SI O SI)
-    endHour: parseInt(process.env.WORKING_END_HOUR) || 18,     // 6 PM (SI O SI)
-    lunchStartHour: parseInt(process.env.LUNCH_START_HOUR) || 14, // 2 PM
-    lunchEndHour: parseInt(process.env.LUNCH_END_HOUR) || 15,     // 3 PM
-    slotIntervalMinutes: parseInt(process.env.SLOT_INTERVAL_MINUTES) || 60, // 1 hora (sesiones de hora por hora)
+    startHour: parseInt(process.env.WORKING_START_HOUR) || 10,
+    endHour: parseInt(process.env.WORKING_END_HOUR) || 18,
+    lunchStartHour: parseInt(process.env.LUNCH_START_HOUR) || 14,
+    lunchEndHour: parseInt(process.env.LUNCH_END_HOUR) || 15,
+    slotIntervalMinutes: parseInt(process.env.SLOT_INTERVAL_MINUTES) || 60,
     
-    // Horarios especiales por día de la semana
     saturday: {
       enabled: true,
-      startHour: 10, // 10 AM (SI O SI)
-      endHour: 14,   // 2 PM (14:00) (SI O SI)
-      hasLunch: false // No hay horario de comida los sábados
+      startHour: 10,
+      endHour: 14,
+      hasLunch: false
     },
     sunday: {
-      enabled: process.env.SUNDAY_ENABLED === 'true' || false // Domingos cerrado por defecto
+      enabled: process.env.SUNDAY_ENABLED === 'true' || false
     }
   },
 
   validation: {
-    minBookingHours: 1, // Mínimo 1 hora de anticipación
-    maxDaysAhead: 90,   // Máximo 90 días en el futuro
+    minBookingHours: 1,
+    maxDaysAhead: 90,
     emailRegex: /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/,
     phoneMinLength: 10
   }
 };
 
-module.exports = config; 
+module.exports = config;

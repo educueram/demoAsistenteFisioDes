@@ -558,6 +558,96 @@ async function sendReminder24h(appointmentData) {
   }
 }
 
+/**
+ * Enviar recordatorio de cita (15 minutos antes)
+ */
+async function sendReminder15min(appointmentData) {
+  try {
+    if (!transporter) {
+      console.log('📧 Email no configurado - saltando envío');
+      return { success: false, reason: 'SMTP no configurado' };
+    }
+
+    if (!config.smtp.pass || config.smtp.pass.trim() === '') {
+      console.log('⚠️ SMTP_PASS vacío - necesitas configurar App Password de Gmail');
+      return { success: false, reason: 'SMTP_PASS no configurado' };
+    }
+
+    const { 
+      clientName, 
+      clientEmail, 
+      fechaCita,
+      horaCita,
+      serviceName, 
+      profesionalName, 
+      codigoReserva 
+    } = appointmentData;
+
+    const fechaFormateada = moment.tz(fechaCita, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+    const horaFormateada = formatTimeTo12Hour(horaCita);
+
+    const emailContent = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f8f9fa;">
+      <div style="background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #ff5722; margin: 0;">⏰ ¡Tu cita es en 15 minutos!</h1>
+          <p style="color: #6c757d; margin: 5px 0;">Tu cita está por comenzar</p>
+        </div>
+
+        <div style="background-color: #fff3e0; padding: 20px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #ff5722;">
+          <h2 style="color: #e64a19; margin-top: 0;">📅 Detalles de tu Cita</h2>
+          <p><strong>👤 Paciente:</strong> ${clientName}</p>
+          <p><strong>📅 Fecha:</strong> ${fechaFormateada}</p>
+          <p><strong>⏰ Hora:</strong> ${horaFormateada}</p>
+          <p><strong>👨‍⚕️ Especialista:</strong> ${profesionalName}</p>
+          <p><strong>🩺 Servicio:</strong> ${serviceName}</p>
+          <p><strong>🎟️ Código de Reserva:</strong> <span style="font-size: 18px; font-weight: bold; color: #d32f2f;">${codigoReserva}</span></p>
+        </div>
+
+        <div style="background-color: #e8f5e9; padding: 15px; border-radius: 8px; margin-bottom: 20px; border-left: 4px solid #4caf50;">
+          <h3 style="color: #2e7d32; margin-top: 0;">📍 ¡Te esperamos!</h3>
+          <p style="margin: 0;">${config.business.address}</p>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+          <p style="color: #6c757d; margin: 0;">
+            <strong>${config.business.name}</strong><br>
+            ${config.business.phone}<br>
+            📧 ${config.business.email}
+          </p>
+        </div>
+
+      </div>
+    </div>
+    `;
+
+    const mailOptions = {
+      from: `"${config.business.name}" <${config.smtp.user}>`,
+      to: clientEmail,
+      subject: `⏰ ¡Tu cita es en 15 minutos! - ${horaFormateada}`,
+      html: emailContent
+    };
+
+    console.log(`📤 Enviando recordatorio 15min a ${clientEmail}...`);
+    const result = await transporter.sendMail(mailOptions);
+    console.log(`✅ Recordatorio 15min enviado exitosamente. MessageId: ${result.messageId}`);
+
+    return { 
+      success: true, 
+      messageId: result.messageId, 
+      to: clientEmail 
+    };
+
+  } catch (error) {
+    console.error('❌ Error enviando recordatorio 15min:', error.message);
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
+}
+
 // Inicializar servicio al cargar el módulo
 const emailServiceReady = initializeEmailService();
 
@@ -566,6 +656,7 @@ module.exports = {
   sendNewAppointmentNotification,
   sendRescheduledAppointmentConfirmation,
   sendReminder24h,
+  sendReminder15min,
   emailServiceReady,
   initializeEmailService 
 };
