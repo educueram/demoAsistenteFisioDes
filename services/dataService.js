@@ -241,6 +241,22 @@ async function saveClientDataOriginal(clientData) {
   }
 }
 
+function normalizePhoneTo10Digits(phone) {
+  if (!phone) return '';
+  const digitsOnly = phone.toString().replace(/\D/g, '');
+  if (!digitsOnly) return '';
+  if (digitsOnly.startsWith('521') && digitsOnly.length >= 13) {
+    return digitsOnly.substring(3, 13);
+  }
+  if (digitsOnly.startsWith('52') && digitsOnly.length >= 12) {
+    return digitsOnly.substring(2, 12);
+  }
+  if (digitsOnly.length > 10) {
+    return digitsOnly.substring(digitsOnly.length - 10);
+  }
+  return digitsOnly;
+}
+
 /**
  * Buscar cliente existente o crear uno nuevo
  * - Busca SOLO por número de celular (dato principal)
@@ -251,7 +267,7 @@ async function saveClientDataOriginal(clientData) {
 async function findOrCreateClient(nombre, telefono, email) {
   try {
     // Normalizar teléfono para búsqueda
-    const telefonoNormalizado = telefono ? telefono.replace(/[\s\-\(\)\.]/g, '') : '';
+    const telefonoNormalizado = normalizePhoneTo10Digits(telefono);
 
     // Buscar cliente existente SOLO por número de celular (dato principal)
     const searchSQL = `
@@ -477,26 +493,24 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
     console.log(`🔍 Buscando paciente con teléfono: ${numeroTelefono}`);
 
     // Normalizar el número de búsqueda
-    let normalizedSearchPhone = numeroTelefono.replace(/[\s\-\(\)\.]/g, '').replace(/\D/g, '');
+    const normalizedSearchPhone = normalizePhoneTo10Digits(numeroTelefono);
+    const digitsOnly = numeroTelefono ? numeroTelefono.toString().replace(/\D/g, '') : '';
 
     // Preparar variantes de búsqueda
     let searchVariants = [];
 
-    if (normalizedSearchPhone.startsWith('521')) {
+    if (normalizedSearchPhone) {
       searchVariants.push(normalizedSearchPhone);
-      // También buscar sin el 1
-      searchVariants.push('52' + normalizedSearchPhone.substring(3));
-    } else if (normalizedSearchPhone.startsWith('52')) {
-      searchVariants.push(normalizedSearchPhone);
-      // También buscar con el 1
-      searchVariants.push('521' + normalizedSearchPhone.substring(2));
-    } else if (normalizedSearchPhone.length === 10) {
-      searchVariants.push('521' + normalizedSearchPhone);
-      searchVariants.push('52' + normalizedSearchPhone);
-      searchVariants.push(normalizedSearchPhone);
-    } else {
-      searchVariants.push(normalizedSearchPhone);
+      if (normalizedSearchPhone.length === 10) {
+        searchVariants.push('52' + normalizedSearchPhone);
+        searchVariants.push('521' + normalizedSearchPhone);
+      }
     }
+    if (digitsOnly && digitsOnly !== normalizedSearchPhone) {
+      searchVariants.push(digitsOnly);
+    }
+
+    searchVariants = [...new Set(searchVariants)];
 
     console.log(`📞 Variantes de búsqueda: ${searchVariants.join(', ')}`);
 
@@ -551,7 +565,7 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
 
       const grupos = {};
       pacientesEncontrados.forEach(paciente => {
-        const telNormalizado = paciente.telefono.replace(/[\s\-\(\)\.]/g, '');
+        const telNormalizado = normalizePhoneTo10Digits(paciente.telefono);
         if (!grupos[telNormalizado]) {
           grupos[telNormalizado] = [];
         }
@@ -745,27 +759,30 @@ async function getClienteByCelular(celular) {
     console.log(`📞 Celular recibido: ${celular}`);
 
     // Normalizar teléfono
-    const telefonoNormalizado = celular ? celular.replace(/[\s\-\(\)\.]/g, '') : '';
+    const telefonoNormalizado = normalizePhoneTo10Digits(celular);
+    const digitsOnly = celular ? celular.toString().replace(/\D/g, '') : '';
+    const base10 = telefonoNormalizado || (digitsOnly.length >= 10 ? digitsOnly.substring(digitsOnly.length - 10) : digitsOnly);
     
     // Variantes de búsqueda (con y sin prefijos de país)
     const variantes = [
-      `521${telefonoNormalizado}`,  // México móvil con 521
-      `52${telefonoNormalizado}`,   // México con 52
-      telefonoNormalizado,           // Sin prefijo
-      telefonoNormalizado.replace(/^521/, ''),  // Sin 521
-      telefonoNormalizado.replace(/^52/, '')    // Sin 52
-    ];
+      base10,
+      `52${base10}`,
+      `521${base10}`,
+      digitsOnly,
+      telefonoNormalizado
+    ].filter(Boolean);
+    const variantesUnicas = [...new Set(variantes)];
 
-    console.log(`📞 Variantes de búsqueda: ${variantes.join(', ')}`);
+    console.log(`📞 Variantes de búsqueda: ${variantesUnicas.join(', ')}`);
 
     const searchSQL = `
       SELECT IdCliente, NombreCompleto, NumeroCelular, CorreoElectronico
       FROM Clientes 
-      WHERE NumeroCelular IN (?, ?, ?, ?, ?)
+      WHERE NumeroCelular IN (${variantesUnicas.map(() => '?').join(', ')})
       LIMIT 1
     `;
 
-    const results = await query(searchSQL, variantes);
+    const results = await query(searchSQL, variantesUnicas);
 
     if (results.length > 0) {
       const cliente = results[0];

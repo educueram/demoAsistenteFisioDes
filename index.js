@@ -105,20 +105,15 @@ function normalizePhone(phone) {
   if (!phone) return '';
   // Eliminar todos los caracteres no numéricos
   let cleaned = phone.replace(/\D/g, '');
-  
-  // Si empieza con 521, eliminar el 1 extra
-  if (cleaned.startsWith('521')) {
-    cleaned = '52' + cleaned.substring(3);
+
+  if (cleaned.startsWith('521') && cleaned.length >= 13) {
+    cleaned = cleaned.substring(3, 13);
+  } else if (cleaned.startsWith('52') && cleaned.length >= 12) {
+    cleaned = cleaned.substring(2, 12);
+  } else if (cleaned.length > 10) {
+    cleaned = cleaned.substring(cleaned.length - 10);
   }
-  // Si empieza con 52, mantenerlo
-  else if (cleaned.startsWith('52')) {
-    cleaned = '52' + cleaned.substring(2);
-  }
-  // Si son 10 dígitos (sin lada), agregar 52
-  else if (cleaned.length === 10) {
-    cleaned = '52' + cleaned;
-  }
-  
+
   return cleaned;
 }
 
@@ -2184,6 +2179,10 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       isoString: now.toISOString(),
       // Nuevo: información del cliente para prompt
       informacionClientePrompt: informacionClientePrompt,
+      // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
+      patientName: clienteData.existe ? clienteData.primerNombre : null,
+      patientEmail: clienteData.existe ? clienteData.correo : null,
+      patientPhone: clienteData.existe ? clienteData.celular : null,
       // Metadata del cliente (para uso interno si se necesita)
       clienteExiste: clienteData.existe,
       datosCliente: clienteData.existe ? {
