@@ -2174,6 +2174,41 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: null`);
     }
 
+    const nombreSaludo = clienteData.existe ? clienteData.primerNombre : null;
+    const mensajeBienvenida = nombreSaludo
+      ? `¡Hola ${nombreSaludo}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
+
+¿Qué necesitas? Te puedo ayudar con:
+
+📅 1️⃣ *Consultar calendario* - Ver disponibilidad en calendario  
+➕ 2️⃣ *Agendar cita* - Programar una nueva cita  
+❌ 3️⃣ *Cancelar cita* - Cancelar alguna cita  
+💰 4️⃣ *Ver precios* - Conocer nuestros paquetes  
+📍 5️⃣ *Ubicación* - Saber dónde estamos  
+📱 6️⃣ *Contacto* - Teléfonos y redes sociales  
+🕒 7️⃣ *Horarios* - Nuestros horarios de atención  
+👩‍⚕️ 8️⃣ *Especialidades* - En qué nos especializamos  
+🏥 9️⃣ *Padecimientos* - Qué condiciones tratamos  
+💡 10⃣ *Info Tratamientos* - Detalles sobre las terapias  
+
+Solo escribe el número de lo que necesitas o cuéntame directamente qué quieres hacer 👍`
+      : `¡Hola! 👋 Me da mucho gusto poder ayudarte hoy 😊
+
+¿Qué necesitas? Te puedo ayudar con:
+
+📅 1️⃣ *Consultar calendario* - Ver disponibilidad en calendario  
+➕ 2️⃣ *Agendar cita* - Programar una nueva cita  
+❌ 3️⃣ *Cancelar cita* - Cancelar alguna cita  
+💰 4️⃣ *Ver precios* - Conocer nuestros paquetes  
+📍 5️⃣ *Ubicación* - Saber dónde estamos  
+📱 6️⃣ *Contacto* - Teléfonos y redes sociales  
+🕒 7️⃣ *Horarios* - Nuestros horarios de atención  
+👩‍⚕️ 8️⃣ *Especialidades* - En qué nos especializamos  
+🏥 9️⃣ *Padecimientos* - Qué condiciones tratamos  
+💡 10⃣ *Info Tratamientos* - Detalles sobre las terapias  
+
+Solo escribe el número de lo que necesitas o cuéntame directamente qué quieres hacer 👍`;
+
     const response = {
       // Datos originales de fecha/hora
       fechaHora: now.format('dddd, DD [de] MMMM [de] YYYY, HH:mm:ss [GMT]Z'),
@@ -2181,6 +2216,8 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       isoString: now.toISOString(),
       // Nuevo: información del cliente para prompt
       informacionClientePrompt: informacionClientePrompt,
+      // Mensaje de bienvenida personalizado (si hay nombre)
+      mensajeBienvenida: mensajeBienvenida,
       // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
       patientName: clienteData.existe ? clienteData.primerNombre : null,
       patientEmail: clienteData.existe ? clienteData.correo : null,
