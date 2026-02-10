@@ -550,7 +550,7 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
       fechaRegistro: row.fechaRegistro,
       codigoReserva: row.codigoReserva,
       nombreCompleto: row.nombreCompleto,
-      telefono: row.telefono,
+      telefono: normalizePhoneTo10Digits(row.telefono) || row.telefono,
       correoElectronico: row.correoElectronico,
       profesionalName: row.profesionalName,
       fechaCita: row.fechaCita,
@@ -801,7 +801,7 @@ async function getClienteByCelular(celular) {
         idCliente: cliente.IdCliente,
         nombreCompleto: nombreCompleto,
         primerNombre: primerNombre,
-        celular: cliente.NumeroCelular,
+        celular: normalizePhoneTo10Digits(cliente.NumeroCelular) || cliente.NumeroCelular,
         correo: cliente.CorreoElectronico,
         existe: true
       };

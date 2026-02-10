@@ -2153,6 +2153,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     }
 
     console.log(`📞 Celular recibido: ${celular}`);
+    const celularNormalizado = normalizePhone(celular);
 
     // Obtener fecha y hora actual (funcionalidad original)
     const now = moment().tz(config.timezone.default);
@@ -2164,7 +2165,8 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     let informacionClientePrompt = null;
     
     if (clienteData.existe) {
-      informacionClientePrompt = `El cliente se llama ${clienteData.primerNombre}, su correo electrónico es ${clienteData.correo} y su número de celular es ${clienteData.celular}`;
+      const telefonoParaPrompt = normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular;
+      informacionClientePrompt = `El cliente se llama ${clienteData.primerNombre}, su correo electrónico es ${clienteData.correo} y su número de celular es ${telefonoParaPrompt}`;
       console.log(`✅ informacionClientePrompt: ${informacionClientePrompt}`);
     } else {
       // Cliente no existe - dejar preparado para lógica futura
@@ -2182,13 +2184,13 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
       patientName: clienteData.existe ? clienteData.primerNombre : null,
       patientEmail: clienteData.existe ? clienteData.correo : null,
-      patientPhone: clienteData.existe ? clienteData.celular : null,
+      patientPhone: clienteData.existe ? (normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular) : (celularNormalizado || null),
       // Metadata del cliente (para uso interno si se necesita)
       clienteExiste: clienteData.existe,
       datosCliente: clienteData.existe ? {
         primerNombre: clienteData.primerNombre,
         correo: clienteData.correo,
-        celular: clienteData.celular
+        celular: normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular
       } : null
     };
     
@@ -2236,13 +2238,15 @@ app.post('/api/reconocer-cliente', async (req, res) => {
 
     if (pacientesEncontrados && pacientesEncontrados.length > 0) {
       const pacienteMasReciente = pacientesEncontrados[0];
+      const telefonoNormalizado = normalizePhone(pacienteMasReciente.telefono || telefono);
       
       console.log('✅ Cliente existente reconocido silenciosamente');
       console.log(`   - Nombre: ${pacienteMasReciente.nombreCompleto}`);
       console.log(`   - Email: ${pacienteMasReciente.correoElectronico}`);
+      console.log(`   - Teléfono normalizado: ${telefonoNormalizado}`);
       
       // Guardar en caché para uso futuro
-      savePatientInfo(telefono, pacienteMasReciente.nombreCompleto, pacienteMasReciente.correoElectronico);
+      savePatientInfo(telefonoNormalizado || telefono, pacienteMasReciente.nombreCompleto, pacienteMasReciente.correoElectronico);
       
       return res.json({
         success: true,
@@ -2250,7 +2254,7 @@ app.post('/api/reconocer-cliente', async (req, res) => {
         datosCliente: {
           nombreCompleto: pacienteMasReciente.nombreCompleto,
           correoElectronico: pacienteMasReciente.correoElectronico,
-          telefono: pacienteMasReciente.telefono || telefono
+          telefono: telefonoNormalizado || pacienteMasReciente.telefono || telefono
         }
       });
     } else {
@@ -2361,12 +2365,36 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
 
     if (pacientesEncontrados && pacientesEncontrados.length > 0) {
-      console.log('✅ Cliente recurrente detectado (flujo tradicional activado)');
-    } else {
-      console.log('⚠️ Cliente nuevo detectado');
+      const pacienteMasReciente = pacientesEncontrados[0];
+      const telefonoNormalizado = normalizePhone(pacienteMasReciente.telefono || telefono);
+      const primerNombre = (pacienteMasReciente.nombreCompleto || '').split(' ')[0] || 'hola';
+
+      console.log('✅ Cliente recurrente detectado');
+
+      const mensajeExistente = `¡Perfecto, ${primerNombre}! Ya tengo tus datos 😊
+
+📅 Fecha: ${fechaSeleccionada}
+⏰ Hora: ${horaSeleccionada}
+🩺 Servicio: ${servicio}
+
+¿Está todo perfecto? Escribe "sí" para agendar o "no" para ajustar algo.`;
+
+      return res.json({
+        success: true,
+        tipoCliente: 'existente',
+        datosCliente: {
+          nombreCompleto: pacienteMasReciente.nombreCompleto,
+          correoElectronico: pacienteMasReciente.correoElectronico,
+          telefono: telefonoNormalizado || pacienteMasReciente.telefono || telefono
+        },
+        mensaje: mensajeExistente,
+        requiereDatosAdicionales: false
+      });
     }
-    
-    // Flujo tradicional: siempre pedir nombre, sin sugerir datos guardados
+
+    console.log('⚠️ Cliente nuevo detectado');
+
+    // Cliente nuevo: pedir nombre
     const mensajeNuevo = `¡Perfecto! Elegiste las ${horaSeleccionada} del ${fechaSeleccionada} 👍
 
 ¿Me puedes decir tu nombre para la reserva? 😊`;
@@ -2419,6 +2447,11 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
     let esClienteExistente = false;
     
     if (clientPhone && clientPhone !== 'Sin Teléfono') {
+      const normalizedPhone = normalizePhone(clientPhone);
+      if (normalizedPhone) {
+        clientPhone = normalizedPhone;
+      }
+
       console.log('🔍 === RECONOCIENDO CLIENTE ===');
       
       try {
@@ -2744,6 +2777,11 @@ app.post('/api/agenda-cita', async (req, res) => {
     let clientPhone = clientPhoneFromRequest;
     
     if (clientPhone && (clientPhone !== 'Sin Teléfono')) {
+      const normalizedPhone = normalizePhone(clientPhone);
+      if (normalizedPhone) {
+        clientPhone = normalizedPhone;
+      }
+
       console.log('🔍 === BUSCANDO INFORMACIÓN DEL PACIENTE ===');
       
       // Primero intentar del caché
