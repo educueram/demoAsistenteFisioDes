@@ -2774,7 +2774,7 @@ app.post('/api/agenda-cita', async (req, res) => {
               clientEmail = pacienteMasReciente.correoElectronico || clientEmail;
               console.log(`   - Email actualizado desde MySQL: ${clientEmail}`);
             }
-            // Guardar en caché para próximas veces
+            // Guardar en caché para próximas consultas
             savePatientInfo(clientPhone, clientName, clientEmail);
           }
         } catch (error) {
