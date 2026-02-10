@@ -2166,12 +2166,112 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     
     if (clienteData.existe) {
       const telefonoParaPrompt = normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular;
-      informacionClientePrompt = `El cliente se llama ${clienteData.primerNombre}, su correo electrónico es ${clienteData.correo} y su número de celular es ${telefonoParaPrompt}`;
+      const nombreParaPrompt = clienteData.primerNombre;
+      const correoParaPrompt = clienteData.correo;
+      informacionClientePrompt = [
+        ' INFORMACION CRITICA A CONSIDERAR:',
+        '### **Saludo Inicial y Menu Principal (Personalizado)**',
+        '',
+        '**MENSAJE DE BIENVENIDA:**',
+        `"¡Hola, ${nombreParaPrompt}! 👋 Me da mucho gusto poder ayudarte hoy 😊`,
+        '',
+        '¿Que necesitas? Te puedo ayudar con:',
+        '',
+        '📅 1️⃣ **Consultar calendario** - Ver disponibilidad en calendario  ',
+        '➕ 2️⃣ **Agendar cita** - Programar una nueva cita  ',
+        '❌ 3️⃣ **Cancelar cita** - Cancelar alguna cita  ',
+        '💰 4️⃣ **Ver precios** - Conocer nuestros paquetes  ',
+        '📍 5️⃣ **Ubicacion** - Saber donde estamos  ',
+        '📱 6️⃣ **Contacto** - Telefonos y redes sociales  ',
+        '🕒 7️⃣ **Horarios** - Nuestros horarios de atencion',
+        '👩‍⚕️ 8️⃣ **Especialidades** - En que nos especializamos',
+        '🏥 9️⃣ **Padecimientos** - Que condiciones tratamos',
+        '💡 10⃣  **Info Tratamientos** - Detalles sobre las terapias',
+        '',
+        'Solo escribe el numero de lo que necesitas o cuentame directamente que quieres hacer 👍"',
+        '',
+        'Si no entiende la solicitud:  ',
+        `"¡Hola, ${nombreParaPrompt}! 😄 `,
+        '',
+        'No logre entender bien lo que necesitas. ¿Me puedes decir que quieres hacer? Por ejemplo:',
+        '',
+        '📅 1️⃣ **Consultar calendario**  ',
+        '➕ 2️⃣ **Agendar cita**  ',
+        '❌ 3️⃣ **Cancelar cita**  ',
+        '💰 4️⃣ **Ver precios**  ',
+        '📍 5️⃣ **Ubicacion**  ',
+        '📱 6️⃣ **Contacto**  ',
+        '🕒 7️⃣ **Horarios**',
+        '👩‍⚕️ 8️⃣ **Especialidades**',
+        '🏥 9️⃣ **Padecimientos**',
+        '💡 10⃣  **Info Tratamientos**',
+        '',
+        'Puedes escribir el numero o contarme directamente que necesitas"',
+        '',
+        '### **Agendar/Reagendar Cita (Cliente Existente - Sin pedir datos)**',
+        '',
+        '**REGLA CRITICA:** Cuando el cliente es existente, **NO pedir nombre ni email** en ningun paso.  ',
+        'Usar directamente:',
+        '- `patientName`',
+        '- `patientEmail`',
+        '- `patientPhone`',
+        '',
+        '**Confirmacion final (sin pedir datos):**',
+        '"¡Excelente! 🎉 Antes de agendar, confirmemos:',
+        '',
+        '📅 **Fecha**: [fecha natural con dia de la semana]  ',
+        '🕐 **Hora**: [hora en formato 12h]  ',
+        '👩‍⚕️ **Especialista**: Lic. Iris Valeria Gopar  ',
+        '📅 **Servicio**: [Servicio SIN emoji] - $800  ',
+        `👤 **Nombre**: ${nombreParaPrompt}  `,
+        `📧 **Email**: ${correoParaPrompt}  `,
+        `📱 **Telefono**: ${telefonoParaPrompt}`,
+        '',
+        "¿Esta todo perfecto? Escribe 'si' para agendar o 'no' para ajustar algo\"",
+        '',
+        '### **Construccion de JSON (Prefill con datos conocidos)**',
+        '',
+        '**Enviar EXACTAMENTE (sin placeholders, usando los datos reales):**',
+        '```',
+        'AGREGAR_AGENDA_INTELIGENTE',
+        '{',
+        '  "action": "schedule",',
+        '  "calendar": 1,',
+        '  "service": [CODIGO_SERVICIO],',
+        '  "serviceName": "[NOMBRE_SERVICIO]",',
+        '  "date": "[YYYY-MM-DD]",',
+        '  "time": "[HH:MM]",',
+        `  "clientName": "${nombreParaPrompt}",`,
+        `  "clientEmail": "${correoParaPrompt}",`,
+        `  "clientPhone": "${telefonoParaPrompt}"`,
+        '}',
+        '```',
+        '  '
+      ].join('\n');
       console.log(`✅ informacionClientePrompt: ${informacionClientePrompt}`);
     } else {
-      // Cliente no existe - dejar preparado para lógica futura
-      informacionClientePrompt = null;
-      console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: null`);
+      // Cliente no existe - flujo normal (sin conocer datos)
+      informacionClientePrompt = [
+        ' INFORMACION CRITICA A CONSIDERAR:',
+        '### **Flujo Normal (Cliente Nuevo)**',
+        '',
+        '**REGLA:** Tratar al cliente como si NO existiera en la base de datos.',
+        '',
+        '**Solicitar datos en este orden:**',
+        '1) **Nombre completo**',
+        '2) **Numero de telefono**',
+        '3) **Email** (validar formato con @ y .)',
+        '',
+        '**Ejemplo de pregunta inicial:**',
+        '"¡Hola! 😄 ¿Me puedes decir tu nombre completo, por favor?"',
+        '',
+        '**Si falta el telefono:**',
+        '"¿Me compartes tu numero de telefono, por favor?"',
+        '',
+        '**Si falta el email:**',
+        '"¿Cual es tu email? 📧 (Necesario para enviarte la confirmacion de tu cita)"'
+      ].join('\n');
+      console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: ${informacionClientePrompt}`);
     }
 
     const nombreSaludo = clienteData.existe ? clienteData.primerNombre : null;
