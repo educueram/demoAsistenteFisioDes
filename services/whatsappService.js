@@ -30,8 +30,11 @@ async function sendWhatsAppMessage(phone, message) {
     console.log('📞 Número limpio:', numeroLimpio);
 
     let numeroFinal = numeroLimpio;
-    if (!numeroFinal.startsWith('52') && numeroFinal.length === 10) {
-      numeroFinal = '52' + numeroFinal;
+    // Para WhatsApp en México: usar 521 + 10 dígitos (móvil)
+    if (numeroFinal.length === 10) {
+      numeroFinal = `521${numeroFinal}`;
+    } else if (numeroFinal.startsWith('52') && numeroFinal.length === 12 && !numeroFinal.startsWith('521')) {
+      numeroFinal = `521${numeroFinal.slice(2)}`;
     }
     console.log('📞 Número final:', numeroFinal);
 

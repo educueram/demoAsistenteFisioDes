@@ -713,7 +713,7 @@ async function getUpcomingAppointments15min() {
       INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
       INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
       INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
-      WHERE c.Estado IN ('AGENDADA', 'REAGENDADA', 'CONFIRMADA')
+      WHERE c.Estado IN ('AGENDADA', 'REAGENDADA', 'CONFIRMADA', 'RECORDADA')
         AND CONCAT(c.FechaCita, ' ', c.HoraCita) BETWEEN ? AND ?
       ORDER BY c.FechaCita, c.HoraCita
     `;

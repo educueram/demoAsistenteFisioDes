@@ -4992,11 +4992,11 @@ cron.schedule('0 9 * * *', async () => {
       if (appointment.clientPhone) {
         const whatsappResult = await sendWhatsAppReminder24h(appointment);
         
-        // Si WhatsApp se envió exitosamente, actualizar estado a NOTIFICADA
+        // Si WhatsApp se envió exitosamente, actualizar estado a RECORDADA
         if (whatsappResult.success) {
-          console.log(`✅ WhatsApp enviado exitosamente. Actualizando estado a NOTIFICADA...`);
-          await updateClientStatus(appointment.codigoReserva, 'NOTIFICADA');
-          console.log(`✅ Estado actualizado: ${appointment.codigoReserva} -> NOTIFICADA`);
+          console.log(`✅ WhatsApp enviado exitosamente. Actualizando estado a RECORDADA...`);
+          await updateClientStatus(appointment.codigoReserva, 'RECORDADA');
+          console.log(`✅ Estado actualizado: ${appointment.codigoReserva} -> RECORDADA`);
         } else {
           console.log(`⚠️ Error enviando WhatsApp: ${whatsappResult.error}`);
         }
