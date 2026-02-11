@@ -1312,12 +1312,10 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     // Formatear mensaje con todos los días en formato más visual
     for (const dayData of daysWithSlots) {
       // CORRECCIÓN: Asegurar que se use la fecha correcta con zona horaria
-      const dayMoment = moment(dayData.date).tz(config.timezone.default);
-      const dayName = formatDateToSpanishPremium(dayMoment.toDate());
-      
-      // CORRECCIÓN: Usar fecha formateada correctamente
-      const correctDateStr = dayMoment.format('YYYY-MM-DD');
-      
+      const correctDateStr = dayData.dateStr;
+      const dayMoment = moment.tz(correctDateStr, 'YYYY-MM-DD', config.timezone.default);
+      const dayName = formatDateToSpanishPremium(correctDateStr);
+
       const dayLabelRaw = dayMoment.format('dddd D [de] MMMM');
       const dayLabel = dayLabelRaw.charAt(0).toUpperCase() + dayLabelRaw.slice(1);
 
@@ -2166,14 +2164,15 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     
     if (clienteData.existe) {
       const telefonoParaPrompt = normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular;
-      const nombreParaPrompt = clienteData.primerNombre;
+      const nombreCompletoParaPrompt = clienteData.nombreCompleto || clienteData.primerNombre;
+      const nombreParaSaludo = clienteData.primerNombre || clienteData.nombreCompleto;
       const correoParaPrompt = clienteData.correo;
       informacionClientePrompt = [
         ' INFORMACION CRITICA A CONSIDERAR:',
         '### **Saludo Inicial y Menu Principal (Personalizado)**',
         '',
         '**MENSAJE DE BIENVENIDA:**',
-        `"¡Hola, ${nombreParaPrompt}! 👋 Me da mucho gusto poder ayudarte hoy 😊`,
+        `"¡Hola, ${nombreParaSaludo}! 👋 Me da mucho gusto poder ayudarte hoy 😊`,
         '',
         '¿Que necesitas? Te puedo ayudar con:',
         '',
@@ -2191,7 +2190,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         'Solo escribe el numero de lo que necesitas o cuentame directamente que quieres hacer 👍"',
         '',
         'Si no entiende la solicitud:  ',
-        `"¡Hola, ${nombreParaPrompt}! 😄 `,
+        `"¡Hola, ${nombreParaSaludo}! 😄 `,
         '',
         'No logre entender bien lo que necesitas. ¿Me puedes decir que quieres hacer? Por ejemplo:',
         '',
@@ -2223,7 +2222,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '🕐 **Hora**: [hora en formato 12h]  ',
         '👩‍⚕️ **Especialista**: Lic. Iris Valeria Gopar  ',
         '📅 **Servicio**: [Servicio SIN emoji] - $800  ',
-        `👤 **Nombre**: ${nombreParaPrompt}  `,
+        `👤 **Nombre**: ${nombreCompletoParaPrompt}  `,
         `📧 **Email**: ${correoParaPrompt}  `,
         `📱 **Telefono**: ${telefonoParaPrompt}`,
         '',
@@ -2241,7 +2240,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '  "serviceName": "[NOMBRE_SERVICIO]",',
         '  "date": "[YYYY-MM-DD]",',
         '  "time": "[HH:MM]",',
-        `  "clientName": "${nombreParaPrompt}",`,
+        `  "clientName": "${nombreCompletoParaPrompt}",`,
         `  "clientEmail": "${correoParaPrompt}",`,
         `  "clientPhone": "${telefonoParaPrompt}"`,
         '}',
@@ -2345,7 +2344,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: ${informacionClientePrompt}`);
     }
 
-    const nombreSaludo = clienteData.existe ? clienteData.primerNombre : null;
+    const nombreSaludo = clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null;
     const mensajeBienvenida = nombreSaludo
       ? `¡Hola ${nombreSaludo}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
 
@@ -2388,12 +2387,13 @@ Solo escribe el número de lo que necesitas o cuéntame directamente qué quiere
       // Nuevo: información del cliente para prompt
       informacionClientePrompt: informacionClientePrompt,
       // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
-      patientName: clienteData.existe ? clienteData.primerNombre : null,
+      patientName: clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null,
       patientEmail: clienteData.existe ? clienteData.correo : null,
       patientPhone: clienteData.existe ? (normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular) : (celularNormalizado || null),
       // Metadata del cliente (para uso interno si se necesita)
       clienteExiste: clienteData.existe,
       datosCliente: clienteData.existe ? {
+        nombreCompleto: clienteData.nombreCompleto,
         primerNombre: clienteData.primerNombre,
         correo: clienteData.correo,
         celular: normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular
@@ -2573,11 +2573,11 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
     if (pacientesEncontrados && pacientesEncontrados.length > 0) {
       const pacienteMasReciente = pacientesEncontrados[0];
       const telefonoNormalizado = normalizePhone(pacienteMasReciente.telefono || telefono);
-      const primerNombre = (pacienteMasReciente.nombreCompleto || '').split(' ')[0] || 'hola';
+      const nombreCompleto = pacienteMasReciente.nombreCompleto || 'hola';
 
       console.log('✅ Cliente recurrente detectado');
 
-      const mensajeExistente = `¡Perfecto, ${primerNombre}! Ya tengo tus datos 😊
+      const mensajeExistente = `¡Perfecto, ${nombreCompleto}! Ya tengo tus datos 😊
 
 📅 Fecha: ${fechaSeleccionada}
 ⏰ Hora: ${horaSeleccionada}
@@ -4171,14 +4171,14 @@ app.get('/api/test-alternativos/:fecha', async (req, res) => {
     }
     
     // Generar respuesta como lo haría el sistema real
-    const originalDayName = formatDateToSpanishPremium(targetDate);
+    const originalDayName = formatDateToSpanishPremium(targetDateStr);
     let alternativeResponse = `😔 No tengo disponibilidad para *${originalDayName}* (${targetDateStr}), pero sí tengo para estos días:\n\n`;
     
     let letterIndex = 0;
     let dateMapping = {};
     
     for (const dayData of alternativeDays) {
-      const dayName = formatDateToSpanishPremium(dayData.date);
+      const dayName = formatDateToSpanishPremium(dayData.dateStr);
       const occupationEmoji = getOccupationEmoji(dayData.stats.occupationPercentage);
       
       let distanceText = '';
@@ -4422,14 +4422,14 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
       });
     }
 
-    // Formatear datos de respuesta - solo primer nombre y correo electrónico
+    // Formatear datos de respuesta - nombre completo y correo electrónico
     const datosFormateados = pacientesEncontrados.map(paciente => {
       const nombreCompleto = paciente.nombreCompleto || '';
-      const primerNombre = nombreCompleto.split(' ')[0]; // Solo el primer nombre
       const correoElectronico = paciente.correoElectronico || '';
       
       return {
-        primerNombre: primerNombre,
+        nombreCompleto: nombreCompleto,
+        primerNombre: nombreCompleto.split(' ')[0] || '',
         correoElectronico: correoElectronico,
         telefono: paciente.telefono,
         fechaUltimaRegistro: paciente.fechaRegistro
@@ -4438,7 +4438,7 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
 
     // Filtrar solo registros que tengan al menos nombre o correo
     const datosValidos = datosFormateados.filter(paciente => 
-      paciente.primerNombre.trim() !== '' || paciente.correoElectronico.trim() !== ''
+      paciente.nombreCompleto.trim() !== '' || paciente.correoElectronico.trim() !== ''
     );
 
     if (datosValidos.length === 0) {

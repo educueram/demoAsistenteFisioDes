@@ -262,7 +262,7 @@ function normalizePhoneTo10Digits(phone) {
  * - Busca SOLO por número de celular (dato principal)
  * - Si existe, NO actualiza datos, solo devuelve el ID
  * - Si no existe, crea el nuevo cliente
- * - Si el email ya existe pero el teléfono es nuevo, crea cliente sin email
+ * - Si el email ya existe, reutiliza el cliente y actualiza el teléfono si aplica
  */
 async function findOrCreateClient(nombre, telefono, email) {
   try {
@@ -304,24 +304,27 @@ async function findOrCreateClient(nombre, telefono, email) {
       return result.insertId;
 
     } catch (insertError) {
-      // Si hay error por email duplicado, crear cliente con email único basado en teléfono
+      // Si hay error por email duplicado, reutilizar cliente existente por email
       if (insertError.code === 'ER_DUP_ENTRY' && insertError.message.includes('CorreoElectronico')) {
-        console.log('⚠️ Email duplicado pero teléfono es nuevo - creando cliente con email único...');
-        
-        // Generar email único usando el teléfono
-        const emailUnico = `${telefonoNormalizado}@cliente.local`;
-        
-        const insertWithUniqueEmailSQL = `
-          INSERT INTO Clientes (NombreCompleto, NumeroCelular, CorreoElectronico)
-          VALUES (?, ?, ?)
+        console.log('⚠️ Email duplicado - reutilizando cliente existente por correo...');
+
+        const searchByEmailSQL = `
+          SELECT IdCliente, NumeroCelular, NombreCompleto, CorreoElectronico
+          FROM Clientes
+          WHERE CorreoElectronico = ?
+          LIMIT 1
         `;
-        const resultUniqueEmail = await query(insertWithUniqueEmailSQL, [nombre, telefonoNormalizado, emailUnico]);
-        
-        console.log(`✅ Nuevo cliente creado (email único): ID ${resultUniqueEmail.insertId}`);
-        console.log(`   - Nombre: ${nombre}`);
-        console.log(`   - Teléfono: ${telefonoNormalizado}`);
-        console.log(`   - Email: ${emailUnico} (original duplicado: ${email})`);
-        return resultUniqueEmail.insertId;
+        const existingByEmail = await query(searchByEmailSQL, [email]);
+
+        if (existingByEmail.length > 0) {
+          const clienteExistente = existingByEmail[0];
+          console.log(`✅ Cliente existente encontrado por email: ID ${clienteExistente.IdCliente}`);
+          console.log(`   - Nombre en BD: ${clienteExistente.NombreCompleto}`);
+          console.log(`   - Teléfono en BD: ${clienteExistente.NumeroCelular}`);
+
+          // No actualizar teléfono; solo reutilizar el cliente por correo
+          return clienteExistente.IdCliente;
+        }
       }
       throw insertError;
     }
