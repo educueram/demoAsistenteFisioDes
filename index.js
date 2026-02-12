@@ -532,6 +532,20 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, co
       console.log(`   ⚠️ Horarios inválidos/no definidos en DB, usando horario fijo: ${workingHours.start}:00 - ${workingHours.end}:00`);
     }
 
+    if (config.workingHours.forceFixedSchedule) {
+      const fixedHours = getBusinessHoursForDay(jsDay);
+      if (!fixedHours) {
+        console.log(`   ❌ No es día laboral (domingo)`);
+        return null;
+      }
+      workingHours = {
+        start: fixedHours.start,
+        end: fixedHours.end,
+        dayName: dayMoment.clone().tz(config.timezone.default).format('dddd')
+      };
+      console.log(`   🔧 Horario forzado por configuración: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    }
+
     console.log(`🔍 Verificando día ${dateStr} (${moment(dayMoment).format('dddd')})`);
 
     if (!workingHours) {
