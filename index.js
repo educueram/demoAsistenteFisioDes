@@ -1054,18 +1054,22 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       }
     }
     
-    // NUEVA LÓGICA: Consultar días según "days" o día solicitado + 1 día más
-    // Si hay "days", empezar desde HOY y tomar N días hábiles
-    // Si NO hay "days", usar fecha solicitada + 1 día más
-    const datesToCheck = [];
+    // NUEVA LÓGICA: Consultar días con disponibilidad real (hasta llenar el cupo)
+    // Si hay "days", empezar desde HOY y tomar N días hábiles con slots
+    // Si NO hay "days", usar fecha solicitada y buscar los 2 días más cercanos con slots
     const totalDaysRequired = hasDaysParam ? Math.min(daysRequested, 7) : 2;
-    const maxDaysToCheck = hasDaysParam ? totalDaysRequired + 7 : 3; // margen para saltar domingos
+    const maxDaysToCheck = hasDaysParam ? totalDaysRequired + 7 : 10; // margen para saltar domingos
     const startDate = hasDaysParam
       ? today.clone()
       : (targetMoment.isBefore(today, 'day') ? today : targetMoment);
     
-    let daysAdded = 0;
-    for (let i = 0; i < maxDaysToCheck && daysAdded < totalDaysRequired; i++) {
+    const daysWithSlots = [];
+    const datesChecked = [];
+    
+    console.log(`📊 === CONSULTA DE ${totalDaysRequired} DÍAS CON DISPONIBILIDAD (${hasDaysParam ? `MODE=days:${totalDaysRequired}` : 'CERCANOS A FECHA SOLICITADA'}) ===`);
+    console.log(`📅 Fecha inicial: ${startDate.format('YYYY-MM-DD')} (${startDate.format('dddd')})`);
+    
+    for (let i = 0; i < maxDaysToCheck && daysWithSlots.length < totalDaysRequired; i++) {
       const checkDate = startDate.clone().add(i, 'days');
       const jsDay = checkDate.toDate().getDay();
       
@@ -1074,26 +1078,14 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
         continue;
       }
       
-      datesToCheck.push({
+      datesChecked.push(checkDate.toDate());
+      
+      const dayInfo = {
         date: checkDate.toDate(),
         label: hasDaysParam ? 'menu' : (i === 0 ? 'solicitado' : 'siguiente'),
         emoji: hasDaysParam ? '📅' : (i === 0 ? '📅' : '📆'),
-        priority: daysAdded + 1
-      });
-      daysAdded++;
-    }
-    
-    console.log(`📊 === CONSULTA DE ${datesToCheck.length} DÍAS (${hasDaysParam ? `MODE=days:${totalDaysRequired}` : 'DÍA SOLICITADO + 1 MÁS'}) ===`);
-    console.log(`📅 Fecha inicial: ${startDate.format('YYYY-MM-DD')} (${startDate.format('dddd')})`);
-    console.log(`📅 Días a consultar: ${datesToCheck.length}`);
-    datesToCheck.forEach((day, idx) => {
-      const dayMoment = moment(day.date).tz(config.timezone.default);
-      console.log(`   ${idx + 1}. ${dayMoment.format('YYYY-MM-DD')} (${dayMoment.format('dddd')})`);
-    });
-    
-    const daysWithSlots = [];
-    
-    for (const dayInfo of datesToCheck) {
+        priority: datesChecked.length
+      };
       const dayMoment = moment(dayInfo.date).tz(config.timezone.default);
       const dateStr = dayMoment.format('YYYY-MM-DD');
       
@@ -1240,6 +1232,11 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     });
     
     if (daysWithSlots.length === 0) {
+      if (hasDaysParam || !targetMoment) {
+        return res.json(createJsonResponse({ 
+          respuesta: '😔 No encontré horarios disponibles en los próximos días. Intenta con otra fecha o contáctanos directamente.' 
+        }));
+      }
       // CORRECCIÓN: Solo buscar el día específico solicitado, NO días alternativos
       console.log(`\n🔍 === NO HAY DISPONIBILIDAD EN ${targetDateStr} ===`);
       console.log(`📅 Buscando únicamente el día solicitado: ${targetMoment.format('YYYY-MM-DD')} (${targetMoment.format('dddd')})`);
@@ -2539,6 +2536,7 @@ Solo escribe el número de lo que necesitas o cuéntame directamente qué quiere
       isoString: now.toISOString(),
       // Nuevo: información del cliente para prompt
       informacionClientePrompt: informacionClientePrompt,
+      mensajeBienvenida: mensajeBienvenida,
       // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
       patientName: clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null,
       patientEmail: clienteData.existe ? clienteData.correo : null,
