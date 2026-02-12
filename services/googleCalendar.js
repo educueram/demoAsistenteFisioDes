@@ -15,16 +15,16 @@ const crypto = require('crypto');
 async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
   try {
     console.log(`📅 Buscando slots para ${calendarId} el ${date.toISOString().split('T')[0]}`);
-    
+
     const calendar = await getCalendarInstance();
     const dateMoment = moment.tz(date.toISOString().split('T')[0], 'YYYY-MM-DD', config.timezone.default);
     const dayOfWeek = dateMoment.day();
-    
+
     // Validación: Domingo cerrado
     if (dayOfWeek === 0) {
       return [];
     }
-    
+
     // Definir horario según día (usar "hours" si viene del caller)
     let workingHours;
     if (hours && typeof hours === 'object') {
@@ -35,7 +35,8 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
       const end = Number.isFinite(hours.end) ? hours.end : defaultEnd;
       const hasLunch = typeof hours.hasLunch === 'boolean'
         ? hours.hasLunch
-        : (hours.lunchStart !== undefined && hours.lunchEnd !== undefined);
+        : (hours.lunchStart !== undefined && hours.lunchEnd !== undefined) || !isSaturday;
+
       workingHours = {
         start,
         end,
@@ -48,91 +49,34 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
     } else { // Lunes a viernes
       workingHours = { start: 10, end: 18, hasLunch: true, lunchStart: 14, lunchEnd: 15 }; // 10 AM - 6 PM
     }
-    
+
+    // Completar horario de comida si está habilitado pero no se definió
+    if (workingHours.hasLunch) {
+      if (!Number.isFinite(workingHours.lunchStart)) {
+        workingHours.lunchStart = config.workingHours.lunchStartHour || 14;
+      }
+      if (!Number.isFinite(workingHours.lunchEnd)) {
+        workingHours.lunchEnd = config.workingHours.lunchEndHour || 15;
+      }
+    }
+
     console.log(`📅 Horario: ${workingHours.start}:00 - ${workingHours.end}:00`);
     if (workingHours.hasLunch) {
       console.log(`🍽️ Horario comida: ${workingHours.lunchStart}:00 - ${workingHours.lunchEnd}:00`);
     }
-    
-    // Obtener eventos del calendario
-    const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
-    const endOfDay = dateMoment.clone().hour(workingHours.end + 1).minute(0).second(0);
-    
-    const response = await calendar.events.list({
-      calendarId: calendarId,
-      timeMin: startOfDay.toISOString(),
-      timeMax: endOfDay.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime'
-    });
-    
-    const events = response.data.items || [];
-    console.log(`📋 Eventos encontrados: ${events.length}`);
-    
-    // Convertir eventos a formato simple de horas ocupadas
-    const occupiedHours = new Set();
-    const targetDateStr = dateMoment.format('YYYY-MM-DD');
-    
-    events.forEach(event => {
-      try {
-        const eventStart = moment.tz(event.start.dateTime || event.start.date, config.timezone.default);
-        const eventEnd = moment.tz(event.end.dateTime || event.end.date, config.timezone.default);
-        
-        // Solo considerar eventos del mismo día
-        if (eventStart.format('YYYY-MM-DD') !== targetDateStr) return;
-        
-        // Marcar cada hora que el evento ocupa
-        let currentHour = eventStart.hour();
-        const endHour = eventEnd.hour();
-        
-        while (currentHour < endHour && currentHour <= workingHours.end) {
-          if (currentHour >= workingHours.start) {
-            occupiedHours.add(currentHour);
-            console.log(`🚫 Hora ocupada: ${currentHour}:00 (${event.summary || 'Sin título'})`);
-          }
-          currentHour++;
-        }
-        
-      } catch (error) {
-        console.warn(`⚠️ Error procesando evento: ${error.message}`);
-      }
-    });
-    
-    // Generar slots disponibles
-    const availableSlots = [];
-    const now = moment().tz(config.timezone.default);
-    const isToday = dateMoment.isSame(now, 'day');
-    
-    for (let hour = workingHours.start; hour <= workingHours.end; hour++) {
-      // Excluir horario de comida
-      if (workingHours.hasLunch && hour >= workingHours.lunchStart && hour < workingHours.lunchEnd) {
-        console.log(`❌ Slot ${hour}:00 en horario de comida`);
-        continue;
-      }
-      // Verificar si está ocupado
-      if (occupiedHours.has(hour)) {
-        console.log(`❌ Slot ${hour}:00 ocupado`);
-        continue;
-      }
-      
-      // Verificar tiempo mínimo de anticipación (solo para hoy)
-      if (isToday) {
-        const slotTime = dateMoment.clone().hour(hour).minute(0);
-        const minimumTime = now.clone().add(1, 'hour');
-        if (slotTime.isBefore(minimumTime)) {
-          console.log(`❌ Slot ${hour}:00 demasiado pronto (mínimo 1 hora)`);
-          continue;
-        }
-      }
-      
-      // Si pasa todas las validaciones, está disponible
-      availableSlots.push(`${hour.toString().padStart(2, '0')}:00`);
-      console.log(`✅ Slot ${hour}:00 disponible`);
-    }
-    
+
+    // Usar la lógica robusta de generación con solapamientos reales
+    const availableSlots = await generateSlotsForDay(
+      calendar,
+      calendarId,
+      dateMoment,
+      workingHours,
+      durationMinutes
+    );
+
     console.log(`📊 Total slots disponibles: ${availableSlots.length}`);
     return availableSlots;
-    
+
   } catch (error) {
     console.error('❌ Error en findAvailableSlots:', error.message);
     return [];
