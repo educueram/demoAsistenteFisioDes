@@ -151,8 +151,48 @@ function getPatientInfo(phone) {
 // 🛠️ FUNCIONES AUXILIARES MIGRADAS
 // =================================================================
 
+function sanitizeMessageText(text) {
+  if (typeof text !== 'string') return text;
+  return text
+    .replace(/<\/?item>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function createJsonResponse(data) {
+  if (data && typeof data === 'object') {
+    ['respuesta', 'message', 'mensaje'].forEach((key) => {
+      if (typeof data[key] === 'string') {
+        data[key] = sanitizeMessageText(data[key]);
+      }
+    });
+  } else if (typeof data === 'string') {
+    return sanitizeMessageText(data);
+  }
   return data;
+}
+
+function getCorrectedWorkingHoursForDate(dateMoment, workingHours) {
+  const dayOfWeek = dateMoment.day(); // 0 = domingo
+  if (dayOfWeek === 0) return null;
+  const isSaturday = dayOfWeek === 6;
+  const start = 10;
+  const end = isSaturday ? 14 : 18;
+  return {
+    start,
+    end,
+    dayName: workingHours?.dayName || dateMoment.format('dddd'),
+    hasLunch: !isSaturday,
+    lunchStart: config.workingHours.lunchStartHour || 14,
+    lunchEnd: config.workingHours.lunchEndHour || 15
+  };
+}
+
+function formatSlotsShort(slots, limit = 6) {
+  if (!Array.isArray(slots) || slots.length === 0) return '';
+  const trimmed = slots.slice(0, limit).map(formatTimeTo12Hour);
+  const extraCount = slots.length - trimmed.length;
+  return extraCount > 0 ? `${trimmed.join(', ')} y ${extraCount} más` : trimmed.join(', ');
 }
 
 function formatTime(date) {
@@ -1682,22 +1722,42 @@ app.post('/api/reagenda-cita', async (req, res) => {
       });
     }
 
-    // VALIDACIÓN 3: Horario especial de Sábado (10:00 AM - 2:00 PM)
-    if (dayOfWeek === 6) { // Sábado
-      const hour = startTimeMoment.hour();
-      console.log(`📅 SÁBADO - Verificando horario especial (hora: ${hour})`);
-      
-      if (hour < config.workingHours.saturday.startHour || hour >= config.workingHours.saturday.endHour) {
-        const saturdayStart = config.workingHours.saturday.startHour;
-        const saturdayEnd = config.workingHours.saturday.endHour;
-        const saturdayStartLabel = formatTimeTo12Hour(`${saturdayStart.toString().padStart(2, '0')}:00`);
-        const saturdayEndLabel = formatTimeTo12Hour(`${saturdayEnd.toString().padStart(2, '0')}:00`);
-        
-        return res.json({ 
-          respuesta: `⚠️ Los sábados solo se atiende de ${saturdayStartLabel} a ${saturdayEndLabel}.\n\n🔍 Por favor, selecciona un horario dentro de este rango o elige otro día.` 
-        });
-      }
-      console.log('✅ Horario válido para sábado');
+    // VALIDACIÓN 3: Horario permitido (L-V 10-18, S 10-14)
+    const dayNum = (dayOfWeek === 0) ? 7 : dayOfWeek;
+    const workingHours = findWorkingHours('1', dayNum, configData.hours);
+    if (!workingHours) {
+      return res.json({ 
+        respuesta: '🚫 No hay servicio para la fecha seleccionada. Por favor, elige otra fecha.' 
+      });
+    }
+    const correctedHours = getCorrectedWorkingHoursForDate(startTimeMoment, workingHours);
+    if (!correctedHours) {
+      return res.json({ 
+        respuesta: '🚫 No hay servicio los domingos. Por favor, selecciona otro día.' 
+      });
+    }
+    const requestedHour = startTimeMoment.hour();
+    if (requestedHour < correctedHours.start || requestedHour > correctedHours.end) {
+      const startLabel = formatTimeTo12Hour(`${correctedHours.start.toString().padStart(2, '0')}:00`);
+      const endLabel = formatTimeTo12Hour(`${correctedHours.end.toString().padStart(2, '0')}:00`);
+      const isSaturday = dayOfWeek === 6;
+      const baseMessage = isSaturday
+        ? `⚠️ Los sábados solo se atiende de ${startLabel} a ${endLabel}.`
+        : `⚠️ El horario de atención es de ${startLabel} a ${endLabel} (Lunes a Viernes).`;
+      const nextAvailable = await findNextAvailableDateWithSlots(
+        startTimeMoment,
+        '1',
+        1,
+        configData,
+        calendarId,
+        60
+      );
+      const suggestion = nextAvailable
+        ? `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`
+        : '\n\n🔍 Por favor elige otro día u horario disponible.';
+      return res.json({ 
+        respuesta: `${baseMessage}\n\n🔍 Por favor, selecciona un horario dentro de este rango.${suggestion}` 
+      });
     }
 
     // VALIDACIÓN 4: Tiempo mínimo de anticipación para el mismo día
@@ -1719,21 +1779,44 @@ app.post('/api/reagenda-cita', async (req, res) => {
       });
     }
 
-    // VALIDACIÓN 5: Horario laboral normal (Lunes a Viernes: 10 AM - 6 PM)
-    if (dayOfWeek >= 1 && dayOfWeek <= 5) { // Lunes a Viernes
-      const hour = startTimeMoment.hour();
-      console.log(`📅 DÍA LABORAL - Verificando horario (hora: ${hour})`);
-      
-      if (hour < config.workingHours.startHour || hour >= config.workingHours.endHour) {
-        const startHour = config.workingHours.startHour;
-        const endHour = config.workingHours.endHour;
-        const startLabel = formatTimeTo12Hour(`${startHour.toString().padStart(2, '0')}:00`);
-        const endLabel = formatTimeTo12Hour(`${endHour.toString().padStart(2, '0')}:00`);
-        return res.json({ 
-          respuesta: `⚠️ El horario de atención es de ${startLabel} a ${endLabel}.\n\n🔍 Por favor, selecciona un horario dentro de este rango.` 
-        });
+    // VALIDACIÓN 5: Disponibilidad real en calendario
+    const slotResult = await findAvailableSlots(
+      calendarId,
+      startTimeMoment.toDate(),
+      60,
+      correctedHours
+    );
+    let availableSlots = [];
+    if (typeof slotResult === 'object' && slotResult.slots !== undefined) {
+      availableSlots = slotResult.slots;
+    } else if (Array.isArray(slotResult)) {
+      availableSlots = slotResult;
+    }
+    if (!Array.isArray(availableSlots)) {
+      availableSlots = [];
+    }
+    if (!availableSlots.includes(hora_reagendada)) {
+      const requestedTimeLabel = formatTimeTo12Hour(hora_reagendada);
+      const slotsLabel = availableSlots.length > 0
+        ? `Horarios disponibles ese día: ${formatSlotsShort(availableSlots)}.`
+        : 'No hay horarios disponibles ese día.';
+      let suggestion = '\n\n🔍 Por favor elige otro día u horario disponible.';
+      if (availableSlots.length === 0) {
+        const nextAvailable = await findNextAvailableDateWithSlots(
+          startTimeMoment,
+          '1',
+          1,
+          configData,
+          calendarId,
+          60
+        );
+        if (nextAvailable) {
+          suggestion = `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`;
+        }
       }
-      console.log('✅ Horario válido para día laboral');
+      return res.json({ 
+        respuesta: `❌ El horario ${requestedTimeLabel} no está disponible.\n\n${slotsLabel}${suggestion}` 
+      });
     }
 
     console.log('✅ VALIDACIONES COMPLETADAS - Fecha y hora válidas');
@@ -2192,6 +2275,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '',
         '### **Respuestas rápidas para opciones informativas (8, 9, 10)**',
         '**Formato obligatorio:** texto plano con emojis, sin HTML/XML ni etiquetas <item>.',
+        '**Prohibido:** usar etiquetas <item> o </item> en cualquier circunstancia.',
         '',
         '**Opción 8️⃣ - Especialidades**',
         '👩‍⚕️ *Especialidades de la Lic. Iris Valeria Gopar*',
@@ -2306,6 +2390,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '',
         '### **Respuestas rápidas para opciones informativas (8, 9, 10)**',
         '**Formato obligatorio:** texto plano con emojis, sin HTML/XML ni etiquetas <item>.',
+        '**Prohibido:** usar etiquetas <item> o </item> en cualquier circunstancia.',
         '',
         '**Opción 8️⃣ - Especialidades**',
         '👩‍⚕️ *Especialidades de la Lic. Iris Valeria Gopar*',
@@ -2840,14 +2925,14 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
       
       // Obtener horarios laborales para ese día
       const dayOfWeek = appointmentDateTime.day(); // 0 = Domingo, 1 = Lunes, etc.
-    if (dayOfWeek === 0) {
-      console.log('🚫 DOMINGO - No hay servicio');
-      return res.json({
-        success: false,
-        error: 'No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).',
-        requiresData: !esClienteExistente
-      });
-    }
+      if (dayOfWeek === 0) {
+        console.log('🚫 DOMINGO - No hay servicio');
+        return res.json({
+          success: false,
+          error: 'No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).',
+          requiresData: !esClienteExistente
+        });
+      }
       const dayNum = (dayOfWeek === 0) ? 7 : dayOfWeek; // Convertir domingo de 0 a 7
       const workingHours = findWorkingHours(calendarNumber, dayNum, configData.hours);
       
@@ -2860,26 +2945,85 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
         });
       }
 
-      // Verificar si el horario solicitado está dentro del rango laboral
-      const requestedHour = parseInt(time.split(':')[0]);
-      if (requestedHour < workingHours.start || requestedHour >= workingHours.end) {
-        console.log(`❌ ERROR: Horario solicitado (${requestedHour}) fuera de rango laboral (${workingHours.start}-${workingHours.end})`);
+      const correctedHours = getCorrectedWorkingHoursForDate(appointmentDateTime, workingHours);
+      if (!correctedHours) {
+        console.log('🚫 DOMINGO - No hay servicio');
         return res.json({
           success: false,
-          error: `El horario solicitado no está dentro del horario laboral (${workingHours.start}:00 - ${workingHours.end}:00)`,
+          error: 'No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).',
+          requiresData: !esClienteExistente
+        });
+      }
+
+      // Verificar si el horario solicitado está dentro del rango permitido
+      const requestedHour = parseInt(time.split(':')[0], 10);
+      if (requestedHour < correctedHours.start || requestedHour > correctedHours.end) {
+        const startLabel = formatTimeTo12Hour(`${correctedHours.start.toString().padStart(2, '0')}:00`);
+        const endLabel = formatTimeTo12Hour(`${correctedHours.end.toString().padStart(2, '0')}:00`);
+        const isSaturday = dayOfWeek === 6;
+        const baseMessage = isSaturday
+          ? `⚠️ Los sábados solo se atiende de ${startLabel} a ${endLabel}.`
+          : `⚠️ El horario de atención es de ${startLabel} a ${endLabel} (Lunes a Viernes).`;
+        const nextAvailable = await findNextAvailableDateWithSlots(
+          appointmentDateTime,
+          calendarNumber,
+          serviceNumber,
+          configData,
+          calendarId,
+          serviceDuration
+        );
+        const suggestion = nextAvailable
+          ? `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`
+          : '\n\n🔍 Por favor elige otro día u horario disponible.';
+        console.log(`❌ ERROR: Horario solicitado (${requestedHour}) fuera de rango permitido`);
+        return res.json({
+          success: false,
+          error: `${baseMessage}\n\n🔍 Por favor elige un horario dentro de este rango.${suggestion}`,
           requiresData: !esClienteExistente
         });
       }
 
       // Verificar disponibilidad real en Google Calendar
-      const availableSlots = await findAvailableSlots(calendarId, appointmentDateTime.toDate(), parseInt(serviceDuration), workingHours);
+      const slotResult = await findAvailableSlots(
+        calendarId,
+        appointmentDateTime.toDate(),
+        parseInt(serviceDuration),
+        correctedHours
+      );
+      let availableSlots = [];
+      if (typeof slotResult === 'object' && slotResult.slots !== undefined) {
+        availableSlots = slotResult.slots;
+      } else if (Array.isArray(slotResult)) {
+        availableSlots = slotResult;
+      }
+      if (!Array.isArray(availableSlots)) {
+        availableSlots = [];
+      }
       
       if (!availableSlots.includes(time)) {
         console.log(`❌ ERROR: Horario ${time} no disponible`);
         console.log(`   Slots disponibles: [${availableSlots.join(', ')}]`);
+        const requestedTimeLabel = formatTimeTo12Hour(time);
+        const slotsLabel = availableSlots.length > 0
+          ? `Horarios disponibles ese día: ${formatSlotsShort(availableSlots)}.`
+          : 'No hay horarios disponibles ese día.';
+        let suggestion = '\n\n🔍 Por favor elige otro día u horario disponible.';
+        if (availableSlots.length === 0) {
+          const nextAvailable = await findNextAvailableDateWithSlots(
+            appointmentDateTime,
+            calendarNumber,
+            serviceNumber,
+            configData,
+            calendarId,
+            serviceDuration
+          );
+          if (nextAvailable) {
+            suggestion = `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`;
+          }
+        }
         return res.json({
           success: false,
-          error: `El horario ${time} ya no está disponible. Horarios disponibles: ${availableSlots.join(', ')}`,
+          error: `❌ El horario ${requestedTimeLabel} no está disponible.\n\n${slotsLabel}${suggestion}`,
           requiresData: !esClienteExistente
         });
       }
@@ -3270,6 +3414,79 @@ app.post('/api/agenda-cita', async (req, res) => {
     const dayOfWeek = startTime.day();
     if (dayOfWeek === 0) {
       return res.json({ respuesta: '🚫 No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).' });
+    }
+
+    // VALIDACIÓN: Horario permitido (L-V 10-18, S 10-14) y disponibilidad real
+    const dayNum = (dayOfWeek === 0) ? 7 : dayOfWeek;
+    const workingHours = findWorkingHours(calendarNumber, dayNum, configData.hours);
+    if (!workingHours) {
+      return res.json({ respuesta: '🚫 No hay servicio para la fecha seleccionada. Por favor elige otra fecha.' });
+    }
+    const correctedHours = getCorrectedWorkingHoursForDate(startTime, workingHours);
+    if (!correctedHours) {
+      return res.json({ respuesta: '🚫 No hay servicio los domingos. Por favor selecciona otro día.' });
+    }
+    const requestedHour = parseInt(time.split(':')[0], 10);
+    if (requestedHour < correctedHours.start || requestedHour > correctedHours.end) {
+      const startLabel = formatTimeTo12Hour(`${correctedHours.start.toString().padStart(2, '0')}:00`);
+      const endLabel = formatTimeTo12Hour(`${correctedHours.end.toString().padStart(2, '0')}:00`);
+      const isSaturday = dayOfWeek === 6;
+      const baseMessage = isSaturday
+        ? `⚠️ Los sábados solo se atiende de ${startLabel} a ${endLabel}.`
+        : `⚠️ El horario de atención es de ${startLabel} a ${endLabel} (Lunes a Viernes).`;
+      const nextAvailable = await findNextAvailableDateWithSlots(
+        startTime,
+        calendarNumber,
+        serviceNumber,
+        configData,
+        calendarId,
+        serviceDuration
+      );
+      const suggestion = nextAvailable
+        ? `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`
+        : '\n\n🔍 Por favor elige otro día u horario disponible.';
+      return res.json({
+        respuesta: `${baseMessage}\n\n🔍 Por favor elige un horario dentro de este rango.${suggestion}`
+      });
+    }
+
+    const slotResult = await findAvailableSlots(
+      calendarId,
+      startTime.toDate(),
+      parseInt(serviceDuration),
+      correctedHours
+    );
+    let availableSlots = [];
+    if (typeof slotResult === 'object' && slotResult.slots !== undefined) {
+      availableSlots = slotResult.slots;
+    } else if (Array.isArray(slotResult)) {
+      availableSlots = slotResult;
+    }
+    if (!Array.isArray(availableSlots)) {
+      availableSlots = [];
+    }
+    if (!availableSlots.includes(time)) {
+      const requestedTimeLabel = formatTimeTo12Hour(time);
+      const slotsLabel = availableSlots.length > 0
+        ? `Horarios disponibles ese día: ${formatSlotsShort(availableSlots)}.`
+        : 'No hay horarios disponibles ese día.';
+      let suggestion = '\n\n🔍 Por favor elige otro día u horario disponible.';
+      if (availableSlots.length === 0) {
+        const nextAvailable = await findNextAvailableDateWithSlots(
+          startTime,
+          calendarNumber,
+          serviceNumber,
+          configData,
+          calendarId,
+          serviceDuration
+        );
+        if (nextAvailable) {
+          suggestion = `\n\n📅 Próxima opción disponible: ${formatDateToSpanishPremium(nextAvailable.date)} (${nextAvailable.dateStr}) a las ${formatTimeTo12Hour(nextAvailable.firstSlot)}.`;
+        }
+      }
+      return res.json({
+        respuesta: `❌ El horario ${requestedTimeLabel} no está disponible.\n\n${slotsLabel}${suggestion}`
+      });
     }
 
     // PASO 4: GENERAR CÓDIGO DE RESERVA ÚNICO
