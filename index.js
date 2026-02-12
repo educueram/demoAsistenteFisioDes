@@ -1058,7 +1058,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     // Si hay "days", empezar desde HOY y tomar N días hábiles con slots
     // Si NO hay "days", usar fecha solicitada y buscar los 2 días más cercanos con slots
     const totalDaysRequired = hasDaysParam ? Math.min(daysRequested, 7) : 2;
-    const maxDaysToCheck = hasDaysParam ? totalDaysRequired + 7 : 10; // margen para saltar domingos
+    const maxDaysToCheck = hasDaysParam ? 30 : 10; // margen para encontrar días con disponibilidad
     const startDate = hasDaysParam
       ? today.clone()
       : (targetMoment.isBefore(today, 'day') ? today : targetMoment);
@@ -1094,6 +1094,25 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       // Solo procesar días que no sean en el pasado
       if (dayMoment.isSameOrAfter(today, 'day')) {
         try {
+          if (hasDaysParam) {
+            const dayResult = await checkDayAvailability(
+              dayMoment,
+              calendarNumber,
+              serviceNumber,
+              configData,
+              calendarId,
+              serviceDuration
+            );
+            if (dayResult && dayResult.hasAvailability && dayResult.slots && dayResult.slots.length > 0) {
+              daysWithSlots.push({
+                ...dayResult,
+                label: 'menu',
+                emoji: '📅',
+                priority: daysWithSlots.length + 1
+              });
+            }
+            continue;
+          }
           const jsDay = dayInfo.date.getDay();
           const dayNumber = (jsDay === 0) ? 7 : jsDay;
           const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
@@ -2308,11 +2327,29 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         console.log('⚠️ No se pudo usar fallback de historial de citas:', error.message);
       }
     }
+
+    // Fallback final: usar caché en memoria si existe
+    if (!clienteData.existe) {
+      const cachedInfo = getPatientInfo(celular);
+      if (cachedInfo && cachedInfo.name) {
+        clienteData = {
+          existe: true,
+          nombreCompleto: cachedInfo.name,
+          primerNombre: cachedInfo.name.split(' ')[0] || cachedInfo.name,
+          celular: normalizePhone(celular) || celularNormalizado || celular,
+          correo: cachedInfo.email || null
+        };
+        console.log('✅ Cliente encontrado en caché');
+      }
+    }
     
     // Construir informacionClientePrompt
     let informacionClientePrompt = null;
     
-    if (clienteData.existe) {
+    const nombreDisponible = (clienteData.primerNombre || clienteData.nombreCompleto || '').trim();
+    const esClienteConNombre = clienteData.existe && nombreDisponible.length > 0;
+
+    if (esClienteConNombre) {
       const telefonoParaPrompt = normalizePhone(clienteData.celular) || celularNormalizado || clienteData.celular;
       const nombreCompletoParaPrompt = clienteData.nombreCompleto || clienteData.primerNombre;
       const nombreParaSaludo = clienteData.primerNombre || clienteData.nombreCompleto;
@@ -2494,7 +2531,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: ${informacionClientePrompt}`);
     }
 
-    const nombreSaludo = clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null;
+    const nombreSaludo = esClienteConNombre ? (clienteData.primerNombre || clienteData.nombreCompleto) : null;
     const mensajeBienvenida = nombreSaludo
       ? `¡Hola ${nombreSaludo}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
 
@@ -2762,11 +2799,12 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
     if (pacientesEncontrados && pacientesEncontrados.length > 0) {
       const pacienteMasReciente = pacientesEncontrados[0];
       const telefonoNormalizado = normalizePhone(pacienteMasReciente.telefono || telefono);
-      const nombreCompleto = pacienteMasReciente.nombreCompleto || 'hola';
+      const nombreCompleto = (pacienteMasReciente.nombreCompleto || '').trim();
+      const saludoNombre = nombreCompleto.length > 0 ? `, ${nombreCompleto}` : '';
 
       console.log('✅ Cliente recurrente detectado');
 
-      const mensajeExistente = `¡Perfecto, ${nombreCompleto}! Ya tengo tus datos 😊
+      const mensajeExistente = `¡Perfecto${saludoNombre}! Ya tengo tus datos 😊
 
 📅 Fecha: ${fechaSeleccionada}
 ⏰ Hora: ${horaSeleccionada}
