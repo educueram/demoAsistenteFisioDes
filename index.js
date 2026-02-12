@@ -260,6 +260,124 @@ function formatDateToSpanishPremium(date) {
   }
 }
 
+function normalizeText(value) {
+  if (!value) return '';
+  return value
+    .toString()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseTimeTo24Hour(timeStr) {
+  if (!timeStr) return null;
+  const raw = timeStr.toString().trim().toLowerCase();
+  const compact = raw.replace(/\s+/g, '');
+
+  const ampmMatch = compact.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)$/);
+  if (ampmMatch) {
+    let hour = parseInt(ampmMatch[1], 10);
+    const minute = parseInt(ampmMatch[2] || '0', 10);
+    const period = ampmMatch[3];
+    if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null;
+    if (period === 'pm' && hour !== 12) hour += 12;
+    if (period === 'am' && hour === 12) hour = 0;
+    return { hour, minute };
+  }
+
+  const twentyFourMatch = compact.match(/^(\d{1,2}):(\d{2})$/);
+  if (twentyFourMatch) {
+    const hour = parseInt(twentyFourMatch[1], 10);
+    const minute = parseInt(twentyFourMatch[2], 10);
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+    return { hour, minute };
+  }
+
+  const hourOnlyMatch = compact.match(/^(\d{1,2})$/);
+  if (hourOnlyMatch) {
+    const hour = parseInt(hourOnlyMatch[1], 10);
+    if (hour < 0 || hour > 23) return null;
+    return { hour, minute: 0 };
+  }
+
+  return null;
+}
+
+function parseSpanishDateToMoment(dateStr) {
+  if (!dateStr) return null;
+  const formats = [
+    'dddd D [de] MMMM [de] YYYY',
+    'D [de] MMMM [de] YYYY',
+    'YYYY-MM-DD'
+  ];
+  const parsed = moment.tz(dateStr, formats, config.timezone.default);
+  if (parsed.isValid()) return parsed;
+
+  const withoutWeekday = dateStr.toString().replace(/^[A-Za-zÁÉÍÓÚÑáéíóúñ]+\s+/i, '');
+  const retry = moment.tz(withoutWeekday, ['D [de] MMMM [de] YYYY'], config.timezone.default);
+  return retry.isValid() ? retry : null;
+}
+
+function getBusinessHoursForDay(dayOfWeek) {
+  if (dayOfWeek === 0) return null; // domingo
+  if (dayOfWeek === 6) {
+    return {
+      start: config.workingHours?.saturday?.startHour ?? 10,
+      end: config.workingHours?.saturday?.endHour ?? 14
+    };
+  }
+  return {
+    start: config.workingHours?.startHour ?? 10,
+    end: config.workingHours?.endHour ?? 18
+  };
+}
+
+function findServiceNumberByName(serviceName, servicesData) {
+  if (!serviceName || !servicesData) return null;
+  const target = normalizeText(serviceName);
+  for (let i = 1; i < servicesData.length; i++) {
+    const name = servicesData[i][2];
+    if (normalizeText(name) === target) {
+      return servicesData[i][0];
+    }
+  }
+  return null;
+}
+
+async function buildOutOfHoursMessage(targetMoment, calendarNumber, serviceNumber, configData) {
+  const baseMessage = '🚫 Ese horario no está disponible.\n\n🕒 Horario de atención: Lunes a viernes 10:00 a 18:00, sábados 10:00 a 14:00.';
+
+  if (!targetMoment || !configData || !serviceNumber) {
+    return `${baseMessage}\n\n🔍 ¿Quieres que te muestre las fechas disponibles más cercanas?`;
+  }
+
+  try {
+    const alternativeDays = await findAlternativeDaysWithAvailability(
+      targetMoment,
+      calendarNumber,
+      serviceNumber,
+      configData
+    );
+
+    if (!alternativeDays || alternativeDays.length === 0) {
+      return `${baseMessage}\n\n🔍 Te recomiendo consultar disponibilidad para otra fecha.`;
+    }
+
+    let message = `${baseMessage}\n\n📅 Fechas disponibles recomendadas:\n`;
+    alternativeDays.forEach((day) => {
+      const dayLabel = formatDateToSpanishPremium(day.date);
+      const times = (day.slots || []).map((slot) => formatTimeTo12Hour(slot)).join(', ');
+      message += `• ${dayLabel}: ${times}\n`;
+    });
+    return message.trim();
+  } catch (error) {
+    console.error('❌ Error generando recomendaciones:', error.message);
+    return `${baseMessage}\n\n🔍 Te recomiendo consultar disponibilidad para otra fecha.`;
+  }
+}
+
 function getLetterEmoji(index) {
   const letterEmojis = [
     'Ⓐ', 'Ⓑ', 'Ⓒ', 'Ⓓ', 'Ⓔ', 'Ⓕ', 'Ⓖ', 'Ⓗ', 'Ⓘ', 'Ⓙ',
@@ -1001,7 +1119,8 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
             correctedHours = {
               start: config.workingHours.saturday.startHour || 10,
               end: config.workingHours.saturday.endHour || 14, // 2 PM (14:00)
-              dayName: workingHours.dayName
+              dayName: workingHours.dayName,
+              ignoreMinimumBookingTime: true
             };
             console.log(`   📅 SÁBADO - Horario especial: ${correctedHours.start}:00 - ${correctedHours.end}:00 (última sesión: ${correctedHours.end}:00)`);
           } else {
@@ -1009,7 +1128,8 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
             correctedHours = {
               start: 10, // FORZADO: Siempre 10 AM
               end: 18,   // FORZADO: Siempre 6 PM (18:00)
-              dayName: workingHours.dayName
+              dayName: workingHours.dayName,
+              ignoreMinimumBookingTime: true
             };
           }
           
@@ -2157,7 +2277,30 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
     const now = moment().tz(config.timezone.default);
     
     // Buscar cliente por celular
-    const clienteData = await getClienteByCelular(celular);
+    let clienteData = await getClienteByCelular(celular);
+
+    // Fallback: si no se encuentra por clientes, buscar por historial de citas
+    if (!clienteData.existe) {
+      try {
+        const pacientesEncontrados = await consultaDatosPacientePorTelefono(celular);
+        if (pacientesEncontrados && pacientesEncontrados.length > 0) {
+          const pacienteMasReciente = pacientesEncontrados[0];
+          const nombreCompleto = pacienteMasReciente.nombreCompleto || '';
+          const primerNombre = nombreCompleto.split(' ')[0] || nombreCompleto;
+          const telefonoNormalizado = normalizePhone(pacienteMasReciente.telefono || celular) || celularNormalizado || pacienteMasReciente.telefono;
+          clienteData = {
+            existe: true,
+            nombreCompleto: nombreCompleto,
+            primerNombre: primerNombre,
+            celular: telefonoNormalizado,
+            correo: pacienteMasReciente.correoElectronico
+          };
+          console.log('✅ Cliente encontrado por historial de citas');
+        }
+      } catch (error) {
+        console.log('⚠️ No se pudo usar fallback de historial de citas:', error.message);
+      }
+    }
     
     // Construir informacionClientePrompt
     let informacionClientePrompt = null;
@@ -2564,6 +2707,44 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
     console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
     console.log(`⏰ Hora seleccionada: ${horaSeleccionada}`);
     console.log(`📅 Fecha seleccionada: ${fechaSeleccionada}`);
+
+    // VALIDACIÓN CRÍTICA: Prohibir horarios fuera de atención
+    const parsedTime = parseTimeTo24Hour(horaSeleccionada);
+    const parsedDate = parseSpanishDateToMoment(fechaSeleccionada);
+    const calendarNumber = '1';
+
+    const businessHours = parsedDate ? getBusinessHoursForDay(parsedDate.day()) : null;
+    const isWithinBusinessHours = parsedTime &&
+      parsedTime.minute === 0 &&
+      businessHours &&
+      parsedTime.hour >= businessHours.start &&
+      parsedTime.hour <= businessHours.end;
+
+    if (!isWithinBusinessHours) {
+      let configData;
+      try {
+        configData = await getConfigData();
+      } catch (error) {
+        console.log('⚠️ No se pudo obtener configuración para recomendaciones:', error.message);
+      }
+
+      const serviceNumber = configData
+        ? (findServiceNumberByName(servicio, configData.services) || '1')
+        : null;
+
+      const outOfHoursMessage = await buildOutOfHoursMessage(
+        parsedDate,
+        calendarNumber,
+        serviceNumber,
+        configData
+      );
+
+      return res.json({
+        success: false,
+        tipoCliente: 'fuera_horario',
+        mensaje: outOfHoursMessage
+      });
+    }
 
     // Buscar en MySQL
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
@@ -3168,6 +3349,19 @@ app.post('/api/agenda-cita', async (req, res) => {
       return res.json({ respuesta: `❌ Error obteniendo configuración: ${error.message}` });
     }
 
+    // VALIDACIÓN CRÍTICA: Prohibir horarios fuera de atención
+    const businessHours = getBusinessHoursForDay(startTime.day());
+    const requestedHour = startTime.hour();
+    if (!businessHours || requestedHour < businessHours.start || requestedHour > businessHours.end) {
+      const outOfHoursMessage = await buildOutOfHoursMessage(
+        startTime,
+        calendarNumber,
+        serviceNumber,
+        configData
+      );
+      return res.json({ respuesta: outOfHoursMessage });
+    }
+
     console.log('=== BÚSQUEDA EN BASE DE DATOS ===');
     const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
     console.log('calendarId encontrado:', calendarId);
@@ -3199,12 +3393,6 @@ app.post('/api/agenda-cita', async (req, res) => {
     if (!serviceDuration) {
       console.log(`❌ ERROR: Servicio no encontrado para número: ${serviceNumber}`);
       return res.json({ respuesta: '🚫 Error: El servicio solicitado no fue encontrado.' });
-    }
-
-    // VALIDACIÓN: Domingo no permitido
-    const dayOfWeek = startTime.day();
-    if (dayOfWeek === 0) {
-      return res.json({ respuesta: '🚫 No hay servicio los domingos. Por favor selecciona otro día (Lunes a Sábado).' });
     }
 
     // PASO 4: GENERAR CÓDIGO DE RESERVA ÚNICO

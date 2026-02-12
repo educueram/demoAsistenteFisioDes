@@ -88,6 +88,7 @@ async function findAvailableSlots(calendarId, date, durationMinutes, hours) {
  */
 async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHours, durationMinutes) {
   try {
+    const dayOfWeek = dateMoment.day(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
     const startOfDay = dateMoment.clone().hour(workingHours.start).minute(0).second(0);
     // CORRECCIÓN: El timeMax debe incluir el final del último slot
     // Para sábados (10 AM - 2 PM), el último slot es 2 PM - 3 PM, así que timeMax debe ser 15:00 (3 PM)
@@ -107,6 +108,7 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
     
     const now = moment().tz(config.timezone.default);
     const minimumBookingTime = now.clone().add(1, 'hours');
+    const ignoreMinimumBookingTime = workingHours && workingHours.ignoreMinimumBookingTime === true;
     
     const isToday = dateMoment.isSame(now, 'day');
 
@@ -114,6 +116,9 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
     console.log(`   - Es hoy: ${isToday}`);
     console.log(`   - Hora actual: ${now.format('HH:mm')}`);
     console.log(`   - Mínimo para agendar: ${minimumBookingTime.format('HH:mm')}`);
+    if (ignoreMinimumBookingTime) {
+      console.log(`   - Mínimo para agendar: ignorado (modo listado completo)`);
+    }
 
     // CORRECCIÓN: Obtener eventos existentes en el calendario
     // timeMax debe ser hasta el final del último slot posible (8 PM)
@@ -773,7 +778,7 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
         }
       }
       
-      if (isToday && slotTime.isBefore(minimumBookingTime)) {
+      if (isToday && !ignoreMinimumBookingTime && slotTime.isBefore(minimumBookingTime)) {
         console.log(`      ❌ RECHAZADO: muy pronto (hora actual: ${now.format('HH:mm')}, mínimo: ${minimumBookingTime.format('HH:mm')})`);
         slotsRejected.push({ hour, reason: 'muy_pronto' });
         continue;
