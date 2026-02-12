@@ -2327,6 +2327,12 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '',
         '### **Agendar/Reagendar Cita (Cliente Existente - Sin pedir datos)**',
         '',
+        '**REGLA CRÍTICA DE HORARIOS (OBLIGATORIA):**',
+        '- Horario permitido: Lunes a Viernes de 10:00 AM a 6:00 PM, Sábados de 10:00 AM a 2:00 PM. Domingo NO hay servicio.',
+        '- Si el cliente pide una fecha/hora fuera de ese rango: **NO confirmar ni decir "perfecto"**.',
+        '- Responder: "Esos horarios no están disponibles" y **consultar automáticamente disponibilidad** para recomendar fechas/horas válidas.',
+        '- Ofrecer opciones disponibles y pedir que elija una hora dentro del horario permitido.',
+        '',
         '**REGLA CRITICA:** Cuando el cliente es existente, **NO pedir nombre ni email** en ningun paso.  ',
         'Usar directamente:',
         '- `patientName`',
@@ -2442,6 +2448,12 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '',
         '### **➕ Proceso para Agendar una Cita (Opción 2️⃣) - Cliente Nuevo**',
         '',
+        '**REGLA CRÍTICA DE HORARIOS (OBLIGATORIA):**',
+        '- Horario permitido: Lunes a Viernes de 10:00 AM a 6:00 PM, Sábados de 10:00 AM a 2:00 PM. Domingo NO hay servicio.',
+        '- Si el cliente pide una fecha/hora fuera de ese rango: **NO confirmar ni decir "perfecto"**.',
+        '- Responder: "Esos horarios no están disponibles" y **consultar automáticamente disponibilidad** para recomendar fechas/horas válidas.',
+        '- Ofrecer opciones disponibles y pedir que elija una hora dentro del horario permitido.',
+        '',
         '**ORDEN OBLIGATORIO:** Servicio → Consulta automática multi-día → Selección de hora → Verificación de cliente → Email → Confirmación → Agendar',
         '**NOTA INTERNA**: Especialista siempre es Lic. Iris Valeria Gopar (calendar=1) - no preguntar.',
         '',
@@ -2494,9 +2506,12 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
       console.log(`⚠️ Cliente no encontrado - informacionClientePrompt: ${informacionClientePrompt}`);
     }
 
-    const nombreSaludo = clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null;
-    const mensajeBienvenida = nombreSaludo
-      ? `¡Hola ${nombreSaludo}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
+    const nombreSaludo = clienteData.existe
+      ? (clienteData.primerNombre || clienteData.nombreCompleto || '').toString().trim()
+      : '';
+    const nombreSaludoFinal = nombreSaludo.length > 0 ? nombreSaludo : null;
+    const mensajeBienvenida = nombreSaludoFinal
+      ? `¡Hola ${nombreSaludoFinal}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
 
 ¿Qué necesitas? Te puedo ayudar con:
 
@@ -2536,6 +2551,7 @@ Solo escribe el número de lo que necesitas o cuéntame directamente qué quiere
       isoString: now.toISOString(),
       // Nuevo: información del cliente para prompt
       informacionClientePrompt: informacionClientePrompt,
+      mensajeBienvenida: mensajeBienvenida,
       // Atajos para prompts dinámicos (mismo nombre que en secciones-dinamicas)
       patientName: clienteData.existe ? (clienteData.primerNombre || clienteData.nombreCompleto) : null,
       patientEmail: clienteData.existe ? clienteData.correo : null,
