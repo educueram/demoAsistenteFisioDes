@@ -169,13 +169,16 @@ function getCircledLetter(letter) {
   return CIRCLED_LETTERS[index] || letter;
 }
 
-function formatSlotsForWhatsApp(slotEntries) {
+function formatSlotsForWhatsApp(slotEntries, options = {}) {
   const total = slotEntries.length;
+  const forceSingleColumn = options.forceSingleColumn === true;
   let columns = 1;
-  if (total >= 4 && total <= 8) {
-    columns = 2;
-  } else if (total >= 9) {
-    columns = 3;
+  if (!forceSingleColumn) {
+    if (total >= 4 && total <= 8) {
+      columns = 2;
+    } else if (total >= 9) {
+      columns = 3;
+    }
   }
 
   const chunkSize = Math.ceil(total / columns);
@@ -929,12 +932,12 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       }));
     }
     
-    // NUEVA LÓGICA: Consultar solo el día solicitado + 1 día más (total 2 días)
+    // NUEVA LÓGICA: Consultar los próximos 4-5 días desde la fecha solicitada
     // Si la fecha solicitada es hoy o en el futuro, empezar desde ahí
     // Si es en el pasado, empezar desde hoy
     const datesToCheck = [];
-    const maxDaysToCheck = 3; // Revisar hasta 3 días para obtener 2 días válidos (excluyendo domingos)
-    const totalDaysRequired = 2; // Total: día solicitado + 1 día más
+    const maxDaysToCheck = 8; // Revisar hasta 8 días para obtener 5 días válidos (excluyendo domingos)
+    const totalDaysRequired = 5; // Total: día solicitado + próximos 4 días hábiles
     
     let daysAdded = 0;
     for (let i = 0; i < maxDaysToCheck && daysAdded < totalDaysRequired; i++) {
@@ -955,9 +958,9 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
       daysAdded++;
     }
     
-    console.log(`📊 === CONSULTA DE ${datesToCheck.length} DÍAS (DÍA SOLICITADO + 1 MÁS) ===`);
+    console.log(`📊 === CONSULTA DE ${datesToCheck.length} DÍAS (DÍA SOLICITADO + 4 MÁS) ===`);
     console.log(`📅 Fecha inicial: ${startDate.format('YYYY-MM-DD')} (${startDate.format('dddd')})`);
-    console.log(`📅 Días a consultar: ${datesToCheck.length} (solo día solicitado + 1 día más)`);
+    console.log(`📅 Días a consultar: ${datesToCheck.length} (día solicitado + próximos 4 días hábiles)`);
     datesToCheck.forEach((day, idx) => {
       const dayMoment = moment(day.date).tz(config.timezone.default);
       console.log(`   ${idx + 1}. ${dayMoment.format('YYYY-MM-DD')} (${dayMoment.format('dddd')})`);
@@ -1338,7 +1341,7 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
         };
       });
 
-      responseText += `${formatSlotsForWhatsApp(formattedSlots)}\n\n`;
+      responseText += `${formatSlotsForWhatsApp(formattedSlots, { forceSingleColumn: true })}\n\n`;
     }
     
     const hasEarlierDay = daysWithSlots.some(day => day.label === 'anterior');
@@ -2187,6 +2190,37 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '🏥 9️⃣ **Padecimientos** - Que condiciones tratamos',
         '💡 10⃣  **Info Tratamientos** - Detalles sobre las terapias',
         '',
+        '### **Respuestas rápidas para opciones informativas (8, 9, 10)**',
+        '**Formato obligatorio:** texto plano con emojis, sin HTML/XML ni etiquetas <item>.',
+        '',
+        '**Opción 8️⃣ - Especialidades**',
+        '👩‍⚕️ *Especialidades de la Lic. Iris Valeria Gopar*',
+        '• Fisioterapia deportiva',
+        '• Fisioterapia geriátrica',
+        '• Traumatología y terapias manuales',
+        '• Tratamientos personalizados según cada caso',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
+        '',
+        '**Opción 9️⃣ - Padecimientos**',
+        '🏥 *Padecimientos que tratamos*',
+        '• Dolor de espalda (ciática, lumbalgia, hernia discal)',
+        '• Lesiones deportivas (esguinces, desgarros)',
+        '• Problemas de hombro (tendinitis, bursitis)',
+        '• Cuello y cervicales',
+        '• Articulaciones, columna y extremidades',
+        '• Rehabilitación post-ACV y parálisis facial',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
+        '',
+        '**Opción 🔟 - Info Tratamientos**',
+        '💡 *Información sobre tratamientos*',
+        '• Normalmente se requieren 10 sesiones (según evaluación)',
+        '• Frecuencia recomendada: 1 a 2 sesiones por semana',
+        '• Paquetes con descuento en pago en efectivo',
+        '• Primera sesión se paga completa',
+        '👕 Trae ropa cómoda o deportiva',
+        '📄 Si tienes radiografías/estudios, tráelos a consulta',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
+        '',
         'Solo escribe el numero de lo que necesitas o cuentame directamente que quieres hacer 👍"',
         '',
         'Si no entiende la solicitud:  ',
@@ -2269,6 +2303,37 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '👩‍⚕️ 8️⃣ **Especialidades** - En qué nos especializamos',
         '🏥 9️⃣ **Padecimientos** - Qué condiciones tratamos',
         '💡 10⃣  **Info Tratamientos** - Detalles sobre las terapias',
+        '',
+        '### **Respuestas rápidas para opciones informativas (8, 9, 10)**',
+        '**Formato obligatorio:** texto plano con emojis, sin HTML/XML ni etiquetas <item>.',
+        '',
+        '**Opción 8️⃣ - Especialidades**',
+        '👩‍⚕️ *Especialidades de la Lic. Iris Valeria Gopar*',
+        '• Fisioterapia deportiva',
+        '• Fisioterapia geriátrica',
+        '• Traumatología y terapias manuales',
+        '• Tratamientos personalizados según cada caso',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
+        '',
+        '**Opción 9️⃣ - Padecimientos**',
+        '🏥 *Padecimientos que tratamos*',
+        '• Dolor de espalda (ciática, lumbalgia, hernia discal)',
+        '• Lesiones deportivas (esguinces, desgarros)',
+        '• Problemas de hombro (tendinitis, bursitis)',
+        '• Cuello y cervicales',
+        '• Articulaciones, columna y extremidades',
+        '• Rehabilitación post-ACV y parálisis facial',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
+        '',
+        '**Opción 🔟 - Info Tratamientos**',
+        '💡 *Información sobre tratamientos*',
+        '• Normalmente se requieren 10 sesiones (según evaluación)',
+        '• Frecuencia recomendada: 1 a 2 sesiones por semana',
+        '• Paquetes con descuento en pago en efectivo',
+        '• Primera sesión se paga completa',
+        '👕 Trae ropa cómoda o deportiva',
+        '📄 Si tienes radiografías/estudios, tráelos a consulta',
+        '🔗 Más info: https://www.facebook.com/valgopmx',
         '',
         'Solo escribe el número de lo que necesitas o cuéntame directamente qué quieres hacer 👍"',
         '',
