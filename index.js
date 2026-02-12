@@ -514,7 +514,11 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, co
     const jsDay = dayMoment.toDate().getDay();
     const dayNumber = (jsDay === 0) ? 7 : jsDay;
     let workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
-    if (!workingHours) {
+    const hoursInvalid = !workingHours ||
+      !Number.isFinite(workingHours.start) ||
+      !Number.isFinite(workingHours.end) ||
+      workingHours.start >= workingHours.end;
+    if (hoursInvalid) {
       const fallbackHours = getBusinessHoursForDay(jsDay);
       if (!fallbackHours) {
         console.log(`   ❌ No es día laboral (sin horarios y domingo)` );
@@ -525,7 +529,7 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, co
         end: fallbackHours.end,
         dayName: dayMoment.clone().tz(config.timezone.default).format('dddd')
       };
-      console.log(`   ⚠️ Horarios no definidos en DB, usando horario fijo: ${workingHours.start}:00 - ${workingHours.end}:00`);
+      console.log(`   ⚠️ Horarios inválidos/no definidos en DB, usando horario fijo: ${workingHours.start}:00 - ${workingHours.end}:00`);
     }
 
     console.log(`🔍 Verificando día ${dateStr} (${moment(dayMoment).format('dddd')})`);
@@ -2504,6 +2508,8 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '',
         '1. **ESPECIALISTA**: NUNCA preguntar. Siempre asumir Lic. Iris Valeria Gopar.',
         '2. Si menciona fecha específica: Guardar fecha y continuar con servicio. Si NO menciona fecha: Consultar automáticamente próximos 4 días hábiles.',
+        '   - Si además menciona HORA específica, SIEMPRE consultar disponibilidad para esa fecha y validar que la hora esté en la lista.',
+        '   - Si la hora NO está disponible: responder "Ese horario está ocupado" y pedir que elija otra hora o día. NO confirmar.',
         '3. Si falta servicio: "¿Qué servicio requieres? 📅',
         '',
         '1️⃣ **Consulta presencial**',
@@ -2514,6 +2520,10 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '   - Si especificó fecha: ⏳ Consultando disponibilidad para [FECHA ESPECÍFICA]...',
         '',
         '5. **SELECCIÓN DE HORA POR LETRA:** Usuario elige letra (A, B, C...) → Confirmar hora y fecha.',
+        '   - Si el usuario escribe una hora en texto (ej: "lunes a las 10") en lugar de letra:',
+        '     - Solo aceptar si esa hora aparece EXACTAMENTE en la lista mostrada para ese día.',
+        '     - Si NO aparece: responder "Ese horario está ocupado", mostrar horarios disponibles y pedir que elija otra hora o día.',
+        '     - NO confirmar ni avanzar si no coincide con la lista.',
         '6. **VERIFICACIÓN AUTOMÁTICA DE CLIENTE:** Llamar a `/api/verificar-cliente-seleccion-hora` con teléfono, hora, fecha y servicio.',
         '   - Mostrar el mensaje del endpoint (pide nombre si es nuevo).',
         '7. **PASO OBLIGATORIO - EMAIL:** "¿Cuál es tu email? 📧 (Necesario para enviarte la confirmación de tu cita)"',
