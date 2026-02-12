@@ -160,8 +160,8 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
       try {
         // Parsear fecha de inicio
         if (event.start.dateTime) {
-          // CORRECCIÓN CRÍTICA: Parsear con zona horaria explícita y formato ISO
-          eventStart = moment.tz(event.start.dateTime, config.timezone.default);
+          // CORRECCIÓN CRÍTICA: Respetar el offset/zonahoraria del evento y convertir a MX
+          eventStart = moment.parseZone(event.start.dateTime).tz(config.timezone.default);
           if (!eventStart.isValid()) {
             console.warn(`⚠️ Evento "${event.summary}" tiene fecha de inicio inválida: ${event.start.dateTime}`);
             return null;
@@ -180,8 +180,8 @@ async function generateSlotsForDay(calendar, calendarId, dateMoment, workingHour
         
         // Parsear fecha de fin
         if (event.end.dateTime) {
-          // CORRECCIÓN CRÍTICA: Parsear con zona horaria explícita y formato ISO
-          eventEnd = moment.tz(event.end.dateTime, config.timezone.default);
+          // CORRECCIÓN CRÍTICA: Respetar el offset/zonahoraria del evento y convertir a MX
+          eventEnd = moment.parseZone(event.end.dateTime).tz(config.timezone.default);
           if (!eventEnd.isValid()) {
             console.warn(`⚠️ Evento "${event.summary}" tiene fecha de fin inválida: ${event.end.dateTime}`);
             return null;
