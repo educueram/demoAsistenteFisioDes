@@ -169,6 +169,13 @@ function getCircledLetter(letter) {
   return CIRCLED_LETTERS[index] || letter;
 }
 
+function formatSlotsShort(slots, limit = 6) {
+  if (!Array.isArray(slots) || slots.length === 0) return '';
+  const trimmed = slots.slice(0, limit).map(formatTimeTo12Hour);
+  const extraCount = slots.length - trimmed.length;
+  return extraCount > 0 ? `${trimmed.join(', ')} y ${extraCount} más` : trimmed.join(', ');
+}
+
 function formatSlotsForWhatsApp(slotEntries) {
   const total = slotEntries.length;
   let columns = 1;
@@ -506,7 +513,20 @@ async function checkDayAvailability(dayMoment, calendarNumber, serviceNumber, co
     const dateStr = dayMoment.format('YYYY-MM-DD');
     const jsDay = dayMoment.toDate().getDay();
     const dayNumber = (jsDay === 0) ? 7 : jsDay;
-    const workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
+    let workingHours = findWorkingHours(calendarNumber, dayNumber, configData.hours);
+    if (!workingHours) {
+      const fallbackHours = getBusinessHoursForDay(jsDay);
+      if (!fallbackHours) {
+        console.log(`   ❌ No es día laboral (sin horarios y domingo)` );
+        return null;
+      }
+      workingHours = {
+        start: fallbackHours.start,
+        end: fallbackHours.end,
+        dayName: dayMoment.clone().tz(config.timezone.default).format('dddd')
+      };
+      console.log(`   ⚠️ Horarios no definidos en DB, usando horario fijo: ${workingHours.start}:00 - ${workingHours.end}:00`);
+    }
 
     console.log(`🔍 Verificando día ${dateStr} (${moment(dayMoment).format('dddd')})`);
 
@@ -2765,6 +2785,14 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
       parsedTime.hour >= businessHours.start &&
       parsedTime.hour <= businessHours.end;
 
+    if (!parsedTime || !parsedDate) {
+      return res.json({
+        success: false,
+        tipoCliente: 'horario_invalido',
+        mensaje: '🚫 No pude validar la fecha u hora seleccionada. Por favor elige una opción disponible del listado.'
+      });
+    }
+
     if (!isWithinBusinessHours) {
       let configData;
       try {
@@ -2789,6 +2817,67 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
         tipoCliente: 'fuera_horario',
         mensaje: outOfHoursMessage
       });
+    }
+
+    // VALIDACIÓN CRÍTICA: Verificar disponibilidad real del horario seleccionado
+    let configData;
+    try {
+      configData = await getConfigData();
+    } catch (error) {
+      console.log('⚠️ No se pudo obtener configuración para validar disponibilidad:', error.message);
+    }
+
+    if (configData) {
+      const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
+      const serviceNumber = findServiceNumberByName(servicio, configData.services) || 1;
+      const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+      const isSaturday = parsedDate.day() === 6;
+      const workingHours = {
+        start: businessHours.start,
+        end: businessHours.end,
+        hasLunch: !isSaturday,
+        lunchStart: config.workingHours.lunchStartHour || 14,
+        lunchEnd: config.workingHours.lunchEndHour || 15
+      };
+
+      if (calendarId && serviceDuration) {
+        const availableSlots = await findAvailableSlots(
+          calendarId,
+          parsedDate.toDate(),
+          parseInt(serviceDuration, 10),
+          workingHours
+        );
+        const requestedSlot = `${parsedTime.hour.toString().padStart(2, '0')}:${parsedTime.minute.toString().padStart(2, '0')}`;
+        const slotList = Array.isArray(availableSlots) ? availableSlots : [];
+        if (!slotList.includes(requestedSlot)) {
+          let suggestion = '\n\n🔍 Te recomiendo elegir otra fecha u horario disponible.';
+          if (slotList.length === 0) {
+            const alternativeDays = await findAlternativeDaysWithAvailability(
+              parsedDate,
+              calendarNumber,
+              serviceNumber,
+              configData
+            );
+            if (alternativeDays.length > 0) {
+              suggestion = '\n\n📅 Fechas disponibles recomendadas:\n';
+              alternativeDays.forEach((day) => {
+                const dayLabel = formatDateToSpanishPremium(day.date);
+                const times = (day.slots || []).map((slot) => formatTimeTo12Hour(slot)).join(', ');
+                suggestion += `• ${dayLabel}: ${times}\n`;
+              });
+              suggestion = suggestion.trim();
+            }
+          }
+          const slotsLabel = slotList.length > 0
+            ? `Horarios disponibles ese día: ${formatSlotsShort(slotList)}.`
+            : 'No hay horarios disponibles ese día.';
+          return res.json({
+            success: false,
+            tipoCliente: 'horario_no_disponible',
+            mensaje: `🚫 Ese horario no está disponible.\n\n${slotsLabel}${suggestion}`
+          });
+        }
+      }
     }
 
     // Buscar en MySQL
