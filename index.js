@@ -11,7 +11,7 @@ const swaggerUi = require('swagger-ui-express');
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
 const { getConfigData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, consultaDatosPacientePorTelefono, getUpcomingAppointments24h, getUpcomingAppointments15min, getClienteByCelular } = require('./services/dataService');
-const { initializePool, testConnection } = require('./services/mysqlService');
+const { initializePool, testConnection, query } = require('./services/mysqlService');
 const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, generateUniqueReservationCode, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
 const { sendEmailReminder24h } = require('./services/reminderService');
@@ -79,6 +79,15 @@ try {
 } catch (error) {
   console.error('❌ Error inicializando MySQL:', error.message);
 }
+
+// KeepAlive: ejecutar SELECT 1 cada 3 horas para evitar que se duerma la conexión a la base de datos
+cron.schedule('0 */3 * * *', async () => {
+  try {
+    await query('SELECT 1');
+  } catch (err) {
+    console.error('KeepAlive MySQL:', err.message);
+  }
+});
 
 // Inicializar autenticación de Google (para Calendar)
 try {
