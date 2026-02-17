@@ -12,13 +12,13 @@ const config = {
     host: process.env.HOST || 'localhost'
   },
 
-  // Configuración de MySQL
-  mysql: {
-    host: process.env.MYSQLHOST || 'localhost',
-    port: parseInt(process.env.MYSQLPORT) || 3306,
-    user: process.env.MYSQLUSER || 'root',
-    password: process.env.MYSQLPASSWORD || '',
-    database: process.env.MYSQLDATABASE || process.env.MYSQL_DATABASE || 'railway'
+  // Configuración de PostgreSQL (solo desde .env)
+  postgres: {
+    host: process.env.PGHOST,
+    port: process.env.PGPORT ? parseInt(process.env.PGPORT, 10) : undefined,
+    user: process.env.PGUSER || process.env.POSTGRES_USER,
+    database: process.env.POSTGRES_DB,
+    password: process.env.POSTGRES_PASSWORD
   },
 
   // Configuración del negocio
@@ -57,7 +57,7 @@ const config = {
     }
   },
 
-  // Nombres de tablas MySQL
+  // Nombres de tablas
   tables: {
     calendars: 'Calendario',
     hours: 'Horarios', 

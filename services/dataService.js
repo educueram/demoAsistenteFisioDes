@@ -1,9 +1,9 @@
-const { query } = require('./mysqlService');
+const { query } = require('./postgresService');
 const config = require('../config');
 const moment = require('moment-timezone');
 
 /**
- * Servicio de datos MySQL
+ * Servicio de datos PostgreSQL
  */
 
 /**
@@ -11,7 +11,7 @@ const moment = require('moment-timezone');
  */
 async function getConfigData() {
   try {
-    console.log('📊 Obteniendo datos de MySQL...');
+    console.log('📊 Obteniendo datos de PostgreSQL...');
 
     const [calendars, hours, services] = await Promise.all([
       getCalendars(),
@@ -25,14 +25,14 @@ async function getConfigData() {
       services: services
     };
 
-    console.log('✅ Datos obtenidos correctamente de MySQL:');
+    console.log('✅ Datos obtenidos correctamente de PostgreSQL:');
     console.log(`   - Calendarios: ${calendars.length - 1} registros`);
     console.log(`   - Horarios: ${hours.length - 1} registros`);
     console.log(`   - Servicios: ${services.length - 1} registros`);
 
     return configData;
   } catch (error) {
-    console.error('❌ Error obteniendo datos de MySQL:', error.message);
+    console.error('❌ Error obteniendo datos de PostgreSQL:', error.message);
     throw error;
   }
 }
@@ -43,17 +43,15 @@ async function getConfigData() {
  */
 async function getCalendars() {
   try {
-    const results = await query(`
+    const { rows } = await query(`
       SELECT id_calendario, google_calendar_id, nombre 
       FROM Calendario 
-      WHERE activo = 1
+      WHERE activo = true
       ORDER BY id_calendario
     `);
 
-    // Convertir a formato compatible con el código existente
-    // [['CALENDARIO', 'ID_CALENDARIO', 'NOMBRE'], [1, 'calendar_id@...', 'Dr. X'], ...]
     const formatted = [['CALENDARIO', 'ID_CALENDARIO', 'NOMBRE']];
-    results.forEach(row => {
+    rows.forEach(row => {
       formatted.push([
         row.id_calendario.toString(),
         row.google_calendar_id,
@@ -74,21 +72,18 @@ async function getCalendars() {
  */
 async function getHours() {
   try {
-    const results = await query(`
-      SELECT IdCalendario, DiaSemana, 
-             HOUR(HoraInicio) as HoraInicio, 
-             HOUR(HoraFin) as HoraFin
+    const { rows } = await query(`
+      SELECT IdCalendario AS "IdCalendario", DiaSemana AS "DiaSemana", 
+             EXTRACT(HOUR FROM HoraInicio)::int AS "HoraInicio", 
+             EXTRACT(HOUR FROM HoraFin)::int AS "HoraFin"
       FROM Horarios 
-      WHERE Activo = 1
+      WHERE Activo = true
       ORDER BY IdCalendario, DiaSemana
     `);
 
-    // Convertir a formato compatible con el código existente
-    // [['CALENDARIO', 'DIA', 'HORA_INICIO', 'HORA_FIN'], [1, 'LUNES', 10, 18], ...]
     const dayNames = { 1: 'LUNES', 2: 'MARTES', 3: 'MIERCOLES', 4: 'JUEVES', 5: 'VIERNES', 6: 'SABADO', 7: 'DOMINGO' };
-    
     const formatted = [['CALENDARIO', 'DIA', 'HORA_INICIO', 'HORA_FIN']];
-    results.forEach(row => {
+    rows.forEach(row => {
       formatted.push([
         row.IdCalendario.toString(),
         dayNames[row.DiaSemana] || row.DiaSemana.toString(),
@@ -110,21 +105,19 @@ async function getHours() {
  */
 async function getServices() {
   try {
-    const results = await query(`
-      SELECT IdServicio, NombreServicio, PrecioServicio, DuracionMinutos
+    const { rows } = await query(`
+      SELECT IdServicio AS "IdServicio", NombreServicio AS "NombreServicio", PrecioServicio AS "PrecioServicio", DuracionMinutos AS "DuracionMinutos"
       FROM Servicios
       ORDER BY IdServicio
     `);
 
-    // Convertir a formato compatible con el código existente
-    // [['SERVICIO', 'DURACION', 'NOMBRE', 'PRECIO'], [1, 60, 'Consulta', 500], ...]
     const formatted = [['SERVICIO', 'DURACION', 'NOMBRE', 'PRECIO']];
-    results.forEach(row => {
+    rows.forEach(row => {
       formatted.push([
         row.IdServicio.toString(),
         row.DuracionMinutos,
         row.NombreServicio,
-        row.PrecioServicio
+        Number(row.PrecioServicio)
       ]);
     });
 
@@ -179,7 +172,7 @@ function findWorkingHours(calendarNumber, dayNumber, data) {
  */
 async function saveClientDataOriginal(clientData) {
   try {
-    console.log('🔄 === INICIO saveClientData MySQL ===');
+    console.log('🔄 === INICIO saveClientData PostgreSQL ===');
     console.log('Datos recibidos:', JSON.stringify(clientData, null, 2));
 
     const now = moment().tz(config.timezone.default);
@@ -207,12 +200,11 @@ async function saveClientDataOriginal(clientData) {
       console.log('⚠️ Usando servicio ID 1 como fallback');
     }
 
-    // PASO 4: Insertar cita
     const insertCitaSQL = `
       INSERT INTO Citas (
         FechaRegistro, CodigoReserva, IdCliente, IdEspecialista, 
         IdServicio, FechaCita, HoraCita, Estado, Observaciones
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES ($1, $2, $3, $4, $5, $6::date, $7::time, $8, $9)
     `;
 
     const citaParams = [
@@ -229,13 +221,13 @@ async function saveClientDataOriginal(clientData) {
 
     await query(insertCitaSQL, citaParams);
 
-    console.log('✅ Datos guardados exitosamente en MySQL');
+    console.log('✅ Datos guardados exitosamente en PostgreSQL');
     console.log(`📊 Cliente ${clientData.clientName} guardado con código ${clientData.codigoReserva}`);
 
     return true;
 
   } catch (error) {
-    console.error('💥 ERROR CRÍTICO en saveClientData MySQL:', error.message);
+    console.error('💥 ERROR CRÍTICO en saveClientData PostgreSQL:', error.message);
     console.error('📚 Stack completo:', error.stack);
     return false;
   }
@@ -269,14 +261,13 @@ async function findOrCreateClient(nombre, telefono, email) {
     // Normalizar teléfono para búsqueda
     const telefonoNormalizado = normalizePhoneTo10Digits(telefono);
 
-    // Buscar cliente existente SOLO por número de celular (dato principal)
     const searchSQL = `
-      SELECT IdCliente, NombreCompleto, CorreoElectronico 
+      SELECT IdCliente AS "IdCliente", NombreCompleto AS "NombreCompleto", CorreoElectronico AS "CorreoElectronico"
       FROM Clientes 
-      WHERE NumeroCelular = ?
+      WHERE NumeroCelular = $1
       LIMIT 1
     `;
-    const existingClients = await query(searchSQL, [telefonoNormalizado]);
+    const { rows: existingClients } = await query(searchSQL, [telefonoNormalizado]);
 
     if (existingClients.length > 0) {
       const clienteExistente = existingClients[0];
@@ -289,32 +280,31 @@ async function findOrCreateClient(nombre, telefono, email) {
       return clienteExistente.IdCliente;
     }
 
-    // Cliente no existe por teléfono - intentar crear nuevo cliente
     try {
       const insertSQL = `
         INSERT INTO Clientes (NombreCompleto, NumeroCelular, CorreoElectronico)
-        VALUES (?, ?, ?)
+        VALUES ($1, $2, $3)
+        RETURNING IdCliente AS "IdCliente"
       `;
       const result = await query(insertSQL, [nombre, telefonoNormalizado, email]);
 
-      console.log(`✅ Nuevo cliente creado: ID ${result.insertId}`);
+      console.log(`✅ Nuevo cliente creado: ID ${result.rows[0].IdCliente}`);
       console.log(`   - Nombre: ${nombre}`);
       console.log(`   - Teléfono: ${telefonoNormalizado}`);
       console.log(`   - Email: ${email}`);
-      return result.insertId;
+      return result.rows[0].IdCliente;
 
     } catch (insertError) {
-      // Si hay error por email duplicado, reutilizar cliente existente por email
-      if (insertError.code === 'ER_DUP_ENTRY' && insertError.message.includes('CorreoElectronico')) {
+      if (insertError.code === '23505' && insertError.message.includes('correoelectronico')) {
         console.log('⚠️ Email duplicado - reutilizando cliente existente por correo...');
 
         const searchByEmailSQL = `
-          SELECT IdCliente, NumeroCelular, NombreCompleto, CorreoElectronico
+          SELECT IdCliente AS "IdCliente", NumeroCelular AS "NumeroCelular", NombreCompleto AS "NombreCompleto", CorreoElectronico AS "CorreoElectronico"
           FROM Clientes
-          WHERE CorreoElectronico = ?
+          WHERE CorreoElectronico = $1
           LIMIT 1
         `;
-        const existingByEmail = await query(searchByEmailSQL, [email]);
+        const { rows: existingByEmail } = await query(searchByEmailSQL, [email]);
 
         if (existingByEmail.length > 0) {
           const clienteExistente = existingByEmail[0];
@@ -342,12 +332,12 @@ async function getEspecialistaIdByName(nombreEspecialista) {
   try {
     if (!nombreEspecialista) return null;
 
-    const results = await query(
-      'SELECT IdEspecialista FROM Especialistas WHERE NombreCompleto LIKE ?',
+    const { rows } = await query(
+      'SELECT IdEspecialista AS "IdEspecialista" FROM Especialistas WHERE NombreCompleto ILIKE $1',
       [`%${nombreEspecialista}%`]
     );
 
-    return results.length > 0 ? results[0].IdEspecialista : null;
+    return rows.length > 0 ? rows[0].IdEspecialista : null;
   } catch (error) {
     console.error('❌ Error buscando especialista:', error.message);
     return null;
@@ -361,12 +351,12 @@ async function getServicioIdByName(nombreServicio) {
   try {
     if (!nombreServicio) return null;
 
-    const results = await query(
-      'SELECT IdServicio FROM Servicios WHERE NombreServicio LIKE ?',
+    const { rows } = await query(
+      'SELECT IdServicio AS "IdServicio" FROM Servicios WHERE NombreServicio ILIKE $1',
       [`%${nombreServicio}%`]
     );
 
-    return results.length > 0 ? results[0].IdServicio : null;
+    return rows.length > 0 ? rows[0].IdServicio : null;
   } catch (error) {
     console.error('❌ Error buscando servicio:', error.message);
     return null;
@@ -382,13 +372,13 @@ async function updateClientStatus(codigoReserva, newStatus) {
 
     const updateSQL = `
       UPDATE Citas 
-      SET Estado = ?
-      WHERE CodigoReserva = ?
+      SET Estado = $1
+      WHERE CodigoReserva = $2
     `;
 
     const result = await query(updateSQL, [newStatus, codigoReserva.toUpperCase()]);
 
-    if (result.affectedRows > 0) {
+    if (result.rowCount > 0) {
       console.log(`✅ Estado actualizado: ${codigoReserva} -> ${newStatus}`);
       return true;
     }
@@ -412,13 +402,13 @@ async function updateClientAppointmentDateTime(codigoReserva, newDate, newTime) 
 
     const updateSQL = `
       UPDATE Citas 
-      SET FechaCita = ?, HoraCita = ?
-      WHERE CodigoReserva = ?
+      SET FechaCita = $1::date, HoraCita = $2::time
+      WHERE CodigoReserva = $3
     `;
 
     const result = await query(updateSQL, [newDate, newTime, codigoReserva.toUpperCase()]);
 
-    if (result.affectedRows > 0) {
+    if (result.rowCount > 0) {
       console.log(`✅ Fecha y hora actualizadas: ${codigoReserva} -> ${newDate} ${newTime}`);
       return true;
     }
@@ -443,22 +433,22 @@ async function getClientDataByReservationCode(codigoReserva) {
       SELECT 
         c.FechaRegistro,
         c.CodigoReserva,
-        cl.NombreCompleto as clientName,
-        cl.NumeroCelular as clientPhone,
-        cl.CorreoElectronico as clientEmail,
-        e.NombreCompleto as profesionalName,
-        DATE_FORMAT(c.FechaCita, '%Y-%m-%d') as date,
-        TIME_FORMAT(c.HoraCita, '%H:%i') as time,
-        s.NombreServicio as serviceName,
-        c.Estado as estado
+        cl.NombreCompleto AS "clientName",
+        cl.NumeroCelular AS "clientPhone",
+        cl.CorreoElectronico AS "clientEmail",
+        e.NombreCompleto AS "profesionalName",
+        TO_CHAR(c.FechaCita, 'YYYY-MM-DD') AS date,
+        TO_CHAR(c.HoraCita, 'HH24:MI') AS time,
+        s.NombreServicio AS "serviceName",
+        c.Estado AS estado
       FROM Citas c
       INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
       INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
       INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
-      WHERE c.CodigoReserva = ?
+      WHERE c.CodigoReserva = $1
     `;
 
-    const results = await query(selectSQL, [codigoReserva.toUpperCase()]);
+    const { rows: results } = await query(selectSQL, [codigoReserva.toUpperCase()]);
 
     if (results.length > 0) {
       const row = results[0];
@@ -518,21 +508,21 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
     console.log(`📞 Variantes de búsqueda: ${searchVariants.join(', ')}`);
 
     // Construir query con múltiples variantes
-    const placeholders = searchVariants.map(() => 'cl.NumeroCelular LIKE ?').join(' OR ');
+    const placeholders = searchVariants.map((_, i) => `cl.NumeroCelular ILIKE $${i + 1}`).join(' OR ');
     const params = searchVariants.map(v => `%${v.slice(-10)}%`);
 
     const selectSQL = `
       SELECT 
-        c.FechaRegistro as fechaRegistro,
-        c.CodigoReserva as codigoReserva,
-        cl.NombreCompleto as nombreCompleto,
-        cl.NumeroCelular as telefono,
-        cl.CorreoElectronico as correoElectronico,
-        e.NombreCompleto as profesionalName,
-        DATE_FORMAT(c.FechaCita, '%Y-%m-%d') as fechaCita,
-        TIME_FORMAT(c.HoraCita, '%H:%i') as horaCita,
-        s.NombreServicio as servicio,
-        c.Estado as estado
+        c.FechaRegistro AS "fechaRegistro",
+        c.CodigoReserva AS "codigoReserva",
+        cl.NombreCompleto AS "nombreCompleto",
+        cl.NumeroCelular AS telefono,
+        cl.CorreoElectronico AS "correoElectronico",
+        e.NombreCompleto AS "profesionalName",
+        TO_CHAR(c.FechaCita, 'YYYY-MM-DD') AS "fechaCita",
+        TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
+        s.NombreServicio AS servicio,
+        c.Estado AS estado
       FROM Citas c
       INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
       INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
@@ -541,7 +531,7 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
       ORDER BY c.FechaRegistro DESC
     `;
 
-    const results = await query(selectSQL, params);
+    const { rows: results } = await query(selectSQL, params);
 
     if (results.length === 0) {
       console.log(`❌ No se encontraron pacientes con el teléfono: ${numeroTelefono}`);
@@ -638,25 +628,25 @@ async function getUpcomingAppointments24h() {
 
     const selectSQL = `
       SELECT 
-        c.CodigoReserva as codigoReserva,
-        cl.NombreCompleto as clientName,
-        cl.NumeroCelular as clientPhone,
-        cl.CorreoElectronico as clientEmail,
-        e.NombreCompleto as profesionalName,
-        DATE_FORMAT(c.FechaCita, '%Y-%m-%d') as fechaCita,
-        TIME_FORMAT(c.HoraCita, '%H:%i') as horaCita,
-        s.NombreServicio as serviceName,
-        c.Estado as estado
+        c.CodigoReserva AS "codigoReserva",
+        cl.NombreCompleto AS "clientName",
+        cl.NumeroCelular AS "clientPhone",
+        cl.CorreoElectronico AS "clientEmail",
+        e.NombreCompleto AS "profesionalName",
+        TO_CHAR(c.FechaCita, 'YYYY-MM-DD') AS "fechaCita",
+        TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
+        s.NombreServicio AS "serviceName",
+        c.Estado AS estado
       FROM Citas c
       INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
       INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
       INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
       WHERE c.Estado IN ('AGENDADA', 'REAGENDADA')
-        AND CONCAT(c.FechaCita, ' ', c.HoraCita) BETWEEN ? AND ?
+        AND (c.FechaCita + c.HoraCita)::timestamp BETWEEN $1::timestamp AND $2::timestamp
       ORDER BY c.FechaCita, c.HoraCita
     `;
 
-    const results = await query(selectSQL, [in23Hours, in25Hours]);
+    const { rows: results } = await query(selectSQL, [in23Hours, in25Hours]);
 
     const upcomingAppointments = results.map(row => {
       const appointmentTime = moment.tz(`${row.fechaCita} ${row.horaCita}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
@@ -703,25 +693,25 @@ async function getUpcomingAppointments15min() {
 
     const selectSQL = `
       SELECT 
-        c.CodigoReserva as codigoReserva,
-        cl.NombreCompleto as clientName,
-        cl.NumeroCelular as clientPhone,
-        cl.CorreoElectronico as clientEmail,
-        e.NombreCompleto as profesionalName,
-        DATE_FORMAT(c.FechaCita, '%Y-%m-%d') as fechaCita,
-        TIME_FORMAT(c.HoraCita, '%H:%i') as horaCita,
-        s.NombreServicio as serviceName,
-        c.Estado as estado
+        c.CodigoReserva AS "codigoReserva",
+        cl.NombreCompleto AS "clientName",
+        cl.NumeroCelular AS "clientPhone",
+        cl.CorreoElectronico AS "clientEmail",
+        e.NombreCompleto AS "profesionalName",
+        TO_CHAR(c.FechaCita, 'YYYY-MM-DD') AS "fechaCita",
+        TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
+        s.NombreServicio AS "serviceName",
+        c.Estado AS estado
       FROM Citas c
       INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
       INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
       INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
       WHERE c.Estado IN ('AGENDADA', 'REAGENDADA', 'CONFIRMADA', 'RECORDADA')
-        AND CONCAT(c.FechaCita, ' ', c.HoraCita) BETWEEN ? AND ?
+        AND (c.FechaCita + c.HoraCita)::timestamp BETWEEN $1::timestamp AND $2::timestamp
       ORDER BY c.FechaCita, c.HoraCita
     `;
 
-    const results = await query(selectSQL, [in13Minutes, in17Minutes]);
+    const { rows: results } = await query(selectSQL, [in13Minutes, in17Minutes]);
 
     const upcomingAppointments = results.map(row => {
       const appointmentTime = moment.tz(`${row.fechaCita} ${row.horaCita}`, 'YYYY-MM-DD HH:mm', config.timezone.default);
@@ -779,13 +769,13 @@ async function getClienteByCelular(celular) {
     console.log(`📞 Variantes de búsqueda: ${variantesUnicas.join(', ')}`);
 
     const searchSQL = `
-      SELECT IdCliente, NombreCompleto, NumeroCelular, CorreoElectronico
+      SELECT IdCliente AS "IdCliente", NombreCompleto AS "NombreCompleto", NumeroCelular AS "NumeroCelular", CorreoElectronico AS "CorreoElectronico"
       FROM Clientes 
-      WHERE NumeroCelular IN (${variantesUnicas.map(() => '?').join(', ')})
+      WHERE NumeroCelular = ANY($1::text[])
       LIMIT 1
     `;
 
-    const results = await query(searchSQL, variantesUnicas);
+    const { rows: results } = await query(searchSQL, [variantesUnicas]);
 
     if (results.length > 0) {
       const cliente = results[0];

@@ -11,7 +11,7 @@ const swaggerUi = require('swagger-ui-express');
 const config = require('./config');
 const { initializeAuth, getCalendarInstance } = require('./services/googleAuth');
 const { getConfigData, findData, findWorkingHours, updateClientStatus, updateClientAppointmentDateTime, getClientDataByReservationCode, saveClientDataOriginal, consultaDatosPacientePorTelefono, getUpcomingAppointments24h, getUpcomingAppointments15min, getClienteByCelular } = require('./services/dataService');
-const { initializePool, testConnection, query } = require('./services/mysqlService');
+const { initializePool, testConnection, query } = require('./services/postgresService');
 const { findAvailableSlots, cancelEventByReservationCodeOriginal, createEventOriginal, createEventWithCustomId, generateUniqueReservationCode, formatTimeTo12Hour } = require('./services/googleCalendar');
 const { sendAppointmentConfirmation, sendNewAppointmentNotification, sendRescheduledAppointmentConfirmation, emailServiceReady } = require('./services/emailService');
 const { sendEmailReminder24h } = require('./services/reminderService');
@@ -66,26 +66,26 @@ app.use(express.urlencoded({ extended: true }));
 // 🔧 INICIALIZACIÓN DE SERVICIOS
 // =================================================================
 
-// Inicializar conexión a MySQL
+// Inicializar conexión a PostgreSQL
 try {
   initializePool();
   testConnection().then(success => {
     if (success) {
-      console.log('🔧 MySQL inicializado correctamente');
+      console.log('🔧 PostgreSQL inicializado correctamente');
     } else {
-      console.error('❌ Error verificando conexión MySQL');
+      console.error('❌ Error verificando conexión PostgreSQL');
     }
   });
 } catch (error) {
-  console.error('❌ Error inicializando MySQL:', error.message);
+  console.error('❌ Error inicializando PostgreSQL:', error.message);
 }
 
-// KeepAlive: ejecutar SELECT 1 cada 3 horas para evitar que se duerma la conexión a la base de datos
+// KeepAlive: ejecutar SELECT 1 cada 3 horas para evitar que se duerma la conexión
 cron.schedule('0 */3 * * *', async () => {
   try {
     await query('SELECT 1');
   } catch (err) {
-    console.error('KeepAlive MySQL:', err.message);
+    console.error('KeepAlive PostgreSQL:', err.message);
   }
 });
 
@@ -952,7 +952,7 @@ app.get('/health', (req, res) => {
     port: PORT,
     services: {
       googleAuth: config.google.clientEmail ? 'configured' : 'missing',
-      mysql: config.mysql.host ? 'configured' : 'missing'
+      database: config.postgres.host ? 'configured' : 'missing'
     },
     version: '1.0.0'
   };
@@ -3864,55 +3864,51 @@ app.post('/api/test-email', async (req, res) => {
 });
 
 /**
- * ENDPOINT: Diagnóstico específico de MySQL
+ * ENDPOINT: Diagnóstico de base de datos (PostgreSQL)
  */
 app.post('/api/debug-mysql', async (req, res) => {
   const debug = [];
-  
+
   try {
-    debug.push('🔍 === DIAGNÓSTICO MYSQL ===');
+    debug.push('🔍 === DIAGNÓSTICO POSTGRESQL ===');
     debug.push(`⏰ Timestamp: ${new Date().toISOString()}`);
-    
-    // PASO 1: Verificar configuración
+
     debug.push('\n📋 PASO 1: VERIFICAR CONFIGURACIÓN');
-    debug.push(`🖥️ MYSQL_HOST: ${config.mysql.host ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`🔌 MYSQL_PORT: ${config.mysql.port ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`👤 MYSQL_USER: ${config.mysql.user ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`🔑 MYSQL_PASSWORD: ${config.mysql.password ? '✅ Configurado' : '❌ Falta'}`);
-    debug.push(`📊 MYSQL_DATABASE: ${config.mysql.database}`);
-    
-    if (!config.mysql.host || !config.mysql.user || !config.mysql.password) {
+    debug.push(`🖥️ PGHOST: ${config.postgres.host ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`🔌 PGPORT: ${config.postgres.port ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`👤 PGUSER/POSTGRES_USER: ${config.postgres.user ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`🔑 POSTGRES_PASSWORD: ${config.postgres.password ? '✅ Configurado' : '❌ Falta'}`);
+    debug.push(`📊 POSTGRES_DB: ${config.postgres.database || '(vacío)'}`);
+
+    if (!config.postgres.host || !config.postgres.user || !config.postgres.password || !config.postgres.database) {
       debug.push('\n❌ CONFIGURACIÓN INCOMPLETA - Falta información en .env');
       return res.json({ debug: debug.join('\n') });
     }
-    
-    // PASO 2: Probar conexión a MySQL
-    debug.push('\n📊 PASO 2: CONEXIÓN MYSQL');
+
+    debug.push('\n📊 PASO 2: CONEXIÓN POSTGRESQL');
     try {
       const connectionSuccess = await testConnection();
       if (connectionSuccess) {
-        debug.push('✅ Conexión a MySQL exitosa');
+        debug.push('✅ Conexión a PostgreSQL exitosa');
       } else {
-        debug.push('❌ Error conectando a MySQL');
+        debug.push('❌ Error conectando a PostgreSQL');
         return res.json({ debug: debug.join('\n') });
       }
     } catch (error) {
-      debug.push(`❌ Error conectando a MySQL: ${error.message}`);
+      debug.push(`❌ Error conectando a PostgreSQL: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
-    
-    // PASO 3: Verificar tablas
+
     debug.push('\n📋 PASO 3: VERIFICAR TABLAS');
     try {
-      const { query } = require('./services/mysqlService');
-      const tables = await query('SHOW TABLES');
-      const tableNames = tables.map(t => Object.values(t)[0]);
+      const { query } = require('./services/postgresService');
+      const { rows: tablesRows } = await query("SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename");
+      const tableNames = tablesRows.map(t => t.tablename);
       debug.push(`✅ Tablas encontradas: ${tableNames.join(', ')}`);
-      
-      // Verificar tablas requeridas
-      const requiredTables = ['Clientes', 'Especialistas', 'Servicios', 'Horarios', 'Calendario', 'Citas'];
-      const missingTables = requiredTables.filter(t => !tableNames.some(tn => tn.toLowerCase() === t.toLowerCase()));
-      
+
+      const requiredTables = ['clientes', 'especialistas', 'servicios', 'horarios', 'calendario', 'citas'];
+      const missingTables = requiredTables.filter(t => !tableNames.includes(t));
+
       if (missingTables.length > 0) {
         debug.push(`⚠️ Tablas faltantes: ${missingTables.join(', ')}`);
       } else {
@@ -3922,29 +3918,35 @@ app.post('/api/debug-mysql', async (req, res) => {
       debug.push(`❌ Error verificando tablas: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
-    
-    // PASO 4: Contar registros
+
     debug.push('\n📊 PASO 4: CONTAR REGISTROS');
     try {
-      const { query } = require('./services/mysqlService');
-      
-      const [clientes] = await query('SELECT COUNT(*) as count FROM Clientes');
-      const [especialistas] = await query('SELECT COUNT(*) as count FROM Especialistas');
-      const [servicios] = await query('SELECT COUNT(*) as count FROM Servicios');
-      const [horarios] = await query('SELECT COUNT(*) as count FROM Horarios');
-      const [calendarios] = await query('SELECT COUNT(*) as count FROM Calendario');
-      const [citas] = await query('SELECT COUNT(*) as count FROM Citas');
-      
+      const { query } = require('./services/postgresService');
+
+      const clientesRes = await query('SELECT COUNT(*)::int AS count FROM Clientes');
+      const especialistasRes = await query('SELECT COUNT(*)::int AS count FROM Especialistas');
+      const serviciosRes = await query('SELECT COUNT(*)::int AS count FROM Servicios');
+      const horariosRes = await query('SELECT COUNT(*)::int AS count FROM Horarios');
+      const calendariosRes = await query('SELECT COUNT(*)::int AS count FROM Calendario');
+      const citasRes = await query('SELECT COUNT(*)::int AS count FROM Citas');
+
+      const clientes = clientesRes.rows[0];
+      const especialistas = especialistasRes.rows[0];
+      const servicios = serviciosRes.rows[0];
+      const horarios = horariosRes.rows[0];
+      const calendarios = calendariosRes.rows[0];
+      const citas = citasRes.rows[0];
+
       debug.push(`   - Clientes: ${clientes.count} registros`);
       debug.push(`   - Especialistas: ${especialistas.count} registros`);
       debug.push(`   - Servicios: ${servicios.count} registros`);
       debug.push(`   - Horarios: ${horarios.count} registros`);
       debug.push(`   - Calendarios: ${calendarios.count} registros`);
       debug.push(`   - Citas: ${citas.count} registros`);
-      
-      debug.push('\n🎉 ¡MYSQL FUNCIONA COMPLETAMENTE!');
-      
-      return res.json({ 
+
+      debug.push('\n🎉 ¡POSTGRESQL FUNCIONA COMPLETAMENTE!');
+
+      return res.json({
         debug: debug.join('\n'),
         success: true,
         stats: {
@@ -3956,12 +3958,12 @@ app.post('/api/debug-mysql', async (req, res) => {
           citas: citas.count
         }
       });
-      
+
     } catch (error) {
       debug.push(`❌ Error contando registros: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
-    
+
   } catch (error) {
     debug.push(`💥 ERROR CRÍTICO: ${error.message}`);
     return res.json({ debug: debug.join('\n') });
@@ -5345,8 +5347,8 @@ const swaggerDocument = {
     },
     '/api/debug-mysql': {
       post: {
-        summary: 'Diagnóstico específico de MySQL',
-        description: 'Endpoint para verificar la conexión y configuración de MySQL',
+        summary: 'Diagnóstico de base de datos (PostgreSQL)',
+        description: 'Endpoint para verificar la conexión y configuración de PostgreSQL',
         requestBody: {
           required: false,
           content: {
@@ -5362,13 +5364,13 @@ const swaggerDocument = {
         },
         responses: {
           '200': {
-            description: 'Respuesta de diagnóstico de MySQL',
+            description: 'Respuesta de diagnóstico de PostgreSQL',
             content: {
               'application/json': {
                 schema: {
                   oneOf: [
                     {
-                      title: 'MySQL Funcionando',
+                      title: 'PostgreSQL Funcionando',
                       type: 'object',
                       properties: {
                         debug: { 
@@ -5382,7 +5384,7 @@ const swaggerDocument = {
                       }
                     },
                     {
-                      title: 'MySQL con Problemas',
+                      title: 'PostgreSQL con Problemas',
                       type: 'object',
                       properties: {
                         debug: { 
@@ -5702,7 +5704,7 @@ app.listen(PORT, () => {
     console.log(`   GET  ${serverUrl}/api/debug-horarios/:fecha`);
   console.log(`\n🔧 Configuración:`);
   console.log(`   - Timezone: ${config.timezone.default}`);
-  console.log(`   - MySQL Database: ${config.mysql.database}`);
+  console.log(`   - PostgreSQL Database: ${config.postgres.database}`);
   console.log(`   - Google Auth: ${config.google.clientEmail ? '✅ Configurado' : '❌ Pendiente'}`);
   
   if (isProduction) {
