@@ -69,9 +69,22 @@ app.use(express.urlencoded({ extended: true }));
 // Inicializar conexión a PostgreSQL
 try {
   initializePool();
-  testConnection().then(success => {
+  testConnection().then(async (success) => {
     if (success) {
       console.log('🔧 PostgreSQL inicializado correctamente');
+      const { query } = require('./services/postgresService');
+      const required = ['clientes', 'especialistas', 'servicios', 'horarios', 'calendario', 'citas'];
+      try {
+        const { rows } = await query("SELECT tablename FROM pg_tables WHERE schemaname = 'public'");
+        const existing = (rows || []).map(r => (r.tablename || '').toLowerCase());
+        const missing = required.filter(t => !existing.includes(t));
+        if (missing.length > 0) {
+          console.error('❌ Faltan tablas en la base de datos:', missing.join(', '));
+          console.error('   → Ejecuta el script base.sql en tu base de PostgreSQL de Railway (Data > Query o con psql).');
+        }
+      } catch (e) {
+        console.error('❌ No se pudo verificar tablas:', e.message);
+      }
     } else {
       console.error('❌ Error verificando conexión PostgreSQL');
     }
@@ -3923,12 +3936,12 @@ app.post('/api/debug-mysql', async (req, res) => {
     try {
       const { query } = require('./services/postgresService');
 
-      const clientesRes = await query('SELECT COUNT(*)::int AS count FROM Clientes');
-      const especialistasRes = await query('SELECT COUNT(*)::int AS count FROM Especialistas');
-      const serviciosRes = await query('SELECT COUNT(*)::int AS count FROM Servicios');
-      const horariosRes = await query('SELECT COUNT(*)::int AS count FROM Horarios');
-      const calendariosRes = await query('SELECT COUNT(*)::int AS count FROM Calendario');
-      const citasRes = await query('SELECT COUNT(*)::int AS count FROM Citas');
+      const clientesRes = await query('SELECT COUNT(*)::int AS count FROM "clientes"');
+      const especialistasRes = await query('SELECT COUNT(*)::int AS count FROM "especialistas"');
+      const serviciosRes = await query('SELECT COUNT(*)::int AS count FROM "servicios"');
+      const horariosRes = await query('SELECT COUNT(*)::int AS count FROM "horarios"');
+      const calendariosRes = await query('SELECT COUNT(*)::int AS count FROM "calendario"');
+      const citasRes = await query('SELECT COUNT(*)::int AS count FROM "citas"');
 
       const clientes = clientesRes.rows[0];
       const especialistas = especialistasRes.rows[0];

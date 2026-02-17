@@ -45,7 +45,7 @@ async function getCalendars() {
   try {
     const { rows } = await query(`
       SELECT id_calendario, google_calendar_id, nombre 
-      FROM Calendario 
+      FROM "calendario" 
       WHERE activo = true
       ORDER BY id_calendario
     `);
@@ -76,7 +76,7 @@ async function getHours() {
       SELECT IdCalendario AS "IdCalendario", DiaSemana AS "DiaSemana", 
              EXTRACT(HOUR FROM HoraInicio)::int AS "HoraInicio", 
              EXTRACT(HOUR FROM HoraFin)::int AS "HoraFin"
-      FROM Horarios 
+      FROM "horarios" 
       WHERE Activo = true
       ORDER BY IdCalendario, DiaSemana
     `);
@@ -107,7 +107,7 @@ async function getServices() {
   try {
     const { rows } = await query(`
       SELECT IdServicio AS "IdServicio", NombreServicio AS "NombreServicio", PrecioServicio AS "PrecioServicio", DuracionMinutos AS "DuracionMinutos"
-      FROM Servicios
+      FROM "servicios"
       ORDER BY IdServicio
     `);
 
@@ -201,7 +201,7 @@ async function saveClientDataOriginal(clientData) {
     }
 
     const insertCitaSQL = `
-      INSERT INTO Citas (
+      INSERT INTO "citas" (
         FechaRegistro, CodigoReserva, IdCliente, IdEspecialista, 
         IdServicio, FechaCita, HoraCita, Estado, Observaciones
       ) VALUES ($1, $2, $3, $4, $5, $6::date, $7::time, $8, $9)
@@ -263,7 +263,7 @@ async function findOrCreateClient(nombre, telefono, email) {
 
     const searchSQL = `
       SELECT IdCliente AS "IdCliente", NombreCompleto AS "NombreCompleto", CorreoElectronico AS "CorreoElectronico"
-      FROM Clientes 
+      FROM "clientes" 
       WHERE NumeroCelular = $1
       LIMIT 1
     `;
@@ -282,7 +282,7 @@ async function findOrCreateClient(nombre, telefono, email) {
 
     try {
       const insertSQL = `
-        INSERT INTO Clientes (NombreCompleto, NumeroCelular, CorreoElectronico)
+        INSERT INTO "clientes" (NombreCompleto, NumeroCelular, CorreoElectronico)
         VALUES ($1, $2, $3)
         RETURNING IdCliente AS "IdCliente"
       `;
@@ -300,7 +300,7 @@ async function findOrCreateClient(nombre, telefono, email) {
 
         const searchByEmailSQL = `
           SELECT IdCliente AS "IdCliente", NumeroCelular AS "NumeroCelular", NombreCompleto AS "NombreCompleto", CorreoElectronico AS "CorreoElectronico"
-          FROM Clientes
+          FROM "clientes"
           WHERE CorreoElectronico = $1
           LIMIT 1
         `;
@@ -333,7 +333,7 @@ async function getEspecialistaIdByName(nombreEspecialista) {
     if (!nombreEspecialista) return null;
 
     const { rows } = await query(
-      'SELECT IdEspecialista AS "IdEspecialista" FROM Especialistas WHERE NombreCompleto ILIKE $1',
+      'SELECT IdEspecialista AS "IdEspecialista" FROM "especialistas" WHERE NombreCompleto ILIKE $1',
       [`%${nombreEspecialista}%`]
     );
 
@@ -352,7 +352,7 @@ async function getServicioIdByName(nombreServicio) {
     if (!nombreServicio) return null;
 
     const { rows } = await query(
-      'SELECT IdServicio AS "IdServicio" FROM Servicios WHERE NombreServicio ILIKE $1',
+      'SELECT IdServicio AS "IdServicio" FROM "servicios" WHERE NombreServicio ILIKE $1',
       [`%${nombreServicio}%`]
     );
 
@@ -371,7 +371,7 @@ async function updateClientStatus(codigoReserva, newStatus) {
     console.log(`📝 Actualizando estado de cita ${codigoReserva} a ${newStatus}...`);
 
     const updateSQL = `
-      UPDATE Citas 
+      UPDATE "citas" 
       SET Estado = $1
       WHERE CodigoReserva = $2
     `;
@@ -401,7 +401,7 @@ async function updateClientAppointmentDateTime(codigoReserva, newDate, newTime) 
     console.log(`   Nueva fecha: ${newDate}, Nueva hora: ${newTime}`);
 
     const updateSQL = `
-      UPDATE Citas 
+      UPDATE "citas" 
       SET FechaCita = $1::date, HoraCita = $2::time
       WHERE CodigoReserva = $3
     `;
@@ -441,10 +441,10 @@ async function getClientDataByReservationCode(codigoReserva) {
         TO_CHAR(c.HoraCita, 'HH24:MI') AS time,
         s.NombreServicio AS "serviceName",
         c.Estado AS estado
-      FROM Citas c
-      INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
-      INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
-      INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
+      FROM "citas" c
+      INNER JOIN "clientes" cl ON c.IdCliente = cl.IdCliente
+      INNER JOIN "especialistas" e ON c.IdEspecialista = e.IdEspecialista
+      INNER JOIN "servicios" s ON c.IdServicio = s.IdServicio
       WHERE c.CodigoReserva = $1
     `;
 
@@ -523,10 +523,10 @@ async function consultaDatosPacientePorTelefono(numeroTelefono) {
         TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
         s.NombreServicio AS servicio,
         c.Estado AS estado
-      FROM Citas c
-      INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
-      INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
-      INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
+      FROM "citas" c
+      INNER JOIN "clientes" cl ON c.IdCliente = cl.IdCliente
+      INNER JOIN "especialistas" e ON c.IdEspecialista = e.IdEspecialista
+      INNER JOIN "servicios" s ON c.IdServicio = s.IdServicio
       WHERE ${placeholders}
       ORDER BY c.FechaRegistro DESC
     `;
@@ -637,10 +637,10 @@ async function getUpcomingAppointments24h() {
         TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
         s.NombreServicio AS "serviceName",
         c.Estado AS estado
-      FROM Citas c
-      INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
-      INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
-      INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
+      FROM "citas" c
+      INNER JOIN "clientes" cl ON c.IdCliente = cl.IdCliente
+      INNER JOIN "especialistas" e ON c.IdEspecialista = e.IdEspecialista
+      INNER JOIN "servicios" s ON c.IdServicio = s.IdServicio
       WHERE c.Estado IN ('AGENDADA', 'REAGENDADA')
         AND (c.FechaCita + c.HoraCita)::timestamp BETWEEN $1::timestamp AND $2::timestamp
       ORDER BY c.FechaCita, c.HoraCita
@@ -702,10 +702,10 @@ async function getUpcomingAppointments15min() {
         TO_CHAR(c.HoraCita, 'HH24:MI') AS "horaCita",
         s.NombreServicio AS "serviceName",
         c.Estado AS estado
-      FROM Citas c
-      INNER JOIN Clientes cl ON c.IdCliente = cl.IdCliente
-      INNER JOIN Especialistas e ON c.IdEspecialista = e.IdEspecialista
-      INNER JOIN Servicios s ON c.IdServicio = s.IdServicio
+      FROM "citas" c
+      INNER JOIN "clientes" cl ON c.IdCliente = cl.IdCliente
+      INNER JOIN "especialistas" e ON c.IdEspecialista = e.IdEspecialista
+      INNER JOIN "servicios" s ON c.IdServicio = s.IdServicio
       WHERE c.Estado IN ('AGENDADA', 'REAGENDADA', 'CONFIRMADA', 'RECORDADA')
         AND (c.FechaCita + c.HoraCita)::timestamp BETWEEN $1::timestamp AND $2::timestamp
       ORDER BY c.FechaCita, c.HoraCita
@@ -770,7 +770,7 @@ async function getClienteByCelular(celular) {
 
     const searchSQL = `
       SELECT IdCliente AS "IdCliente", NombreCompleto AS "NombreCompleto", NumeroCelular AS "NumeroCelular", CorreoElectronico AS "CorreoElectronico"
-      FROM Clientes 
+      FROM "clientes" 
       WHERE NumeroCelular = ANY($1::text[])
       LIMIT 1
     `;
