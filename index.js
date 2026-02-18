@@ -2419,7 +2419,12 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '### **Saludo Inicial y Menu Principal (Personalizado)**',
         '',
         '**MENSAJE DE BIENVENIDA, ES ALTAMENTE IMPORTANTE REALIZAR ESTE DETALLE PARA QUE EL PACIENTE SE SIENTA ACOJIDO:**',
+        '',
+        `**OBLIGATORIO:** El primer mensaje DEBE ser exactamente:`,
         `"¡Hola, ${nombreParaSaludo}! 👋 Que gusto volver a verte de nuevo por acá 😊`,
+        '',
+        `**NUNCA usar:** "¡Hola! 👋 Soy Valeria Gopar..." o cualquier saludo genérico.`,
+        `**SIEMPRE usar:** El nombre "${nombreParaSaludo}" en el saludo.`,
         '',
         '¿Que necesitas? Te puedo ayudar con:',
         '',
@@ -2624,7 +2629,7 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
 
     const nombreSaludo = esClienteConNombre ? (clienteData.primerNombre || clienteData.nombreCompleto) : null;
     const mensajeBienvenida = nombreSaludo
-      ? `¡Hola ${nombreSaludo}! 👋 Me da mucho gusto leerte nuevamente el día de hoy 😊
+      ? `¡Hola, ${nombreSaludo}! 👋 Que gusto volver a verte de nuevo por acá 😊
 
 ¿Qué necesitas? Te puedo ayudar con:
 
