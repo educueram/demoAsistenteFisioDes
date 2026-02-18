@@ -2504,17 +2504,20 @@ app.get('/api/carga-datos-iniciales', async (req, res) => {
         '🚀 EJECUCIÓN FINAL',
         'Después de confirmación enviar inmediatamente:',
         '',
-        'AGREGAR_AGENDA',
+        'AGREGAR_AGENDA_INTELIGENTE',
         '{',
+        '  "action": "schedule",',
         '  "calendar": 1,',
         '  "service": [CODIGO_SERVICIO],',
-        '  "fecha": "[YYYY-MM-DD]",',
-        '  "hora": "[HH:MM]",',
-        `  "nombre": "${nombreCompletoParaPrompt}",`,
-        `  "email": "${correoParaPrompt}"`,
+        '  "serviceName": "[NOMBRE_SERVICIO]",',
+        '  "date": "[YYYY-MM-DD]",',
+        '  "time": "[HH:MM]",',
+        `  "clientName": "${nombreCompletoParaPrompt}",`,
+        `  "clientEmail": "${correoParaPrompt}",`,
+        `  "clientPhone": "${telefonoParaPrompt}"`,
         '}',
         '',
-        '🚨 Usar exactamente los datos precargados por backend.'
+        '🚨 Usar exactamente los datos precargados por backend. NO cambiar los nombres de los campos.'
       ].join('\n');
       console.log(`✅ informacionClientePrompt: ${informacionClientePrompt}`);
     } else {
@@ -3085,6 +3088,48 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
         message: esClienteExistente 
           ? 'Por favor confirma los datos para tu cita'
           : 'Por favor proporciona tu nombre y correo para agendar'
+      });
+    }
+
+    // PASO 1.5: VALIDAR DATOS DEL CLIENTE
+    const missingFields = [];
+    const invalidFields = [];
+
+    if (!clientName || clientName === '') {
+      missingFields.push('clientName');
+    }
+
+    if (!clientEmail || clientEmail === '' || clientEmail === 'Sin Email') {
+      missingFields.push('clientEmail');
+    } else {
+      const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+      if (!emailRegex.test(clientEmail)) {
+        invalidFields.push('clientEmail (formato inválido)');
+      }
+    }
+
+    if (!clientPhone || clientPhone === '' || clientPhone === 'Sin Teléfono') {
+      missingFields.push('clientPhone');
+    } else if (clientPhone.length < 10) {
+      invalidFields.push('clientPhone (muy corto)');
+    }
+
+    if (missingFields.length > 0 || invalidFields.length > 0) {
+      let errorMessage = '⚠️ Error: Faltan o son inválidos los siguientes datos obligatorios:\n\n';
+      missingFields.forEach(field => {
+        errorMessage += `❌ ${field}\n`;
+      });
+      invalidFields.forEach(field => {
+        errorMessage += `❌ ${field}\n`;
+      });
+      errorMessage += '\nEl bot debe recopilar TODOS los datos antes de enviar la solicitud.';
+      
+      return res.json({
+        success: false,
+        error: errorMessage,
+        missingFields: missingFields,
+        invalidFields: invalidFields,
+        requiresData: true
       });
     }
 
