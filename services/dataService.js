@@ -168,7 +168,7 @@ function findWorkingHours(calendarNumber, dayNumber, data) {
 }
 
 /**
- * Guardar datos del cliente y cita en MySQL
+ * Guardar datos del cliente y cita en PostgreSQL
  */
 async function saveClientDataOriginal(clientData) {
   try {

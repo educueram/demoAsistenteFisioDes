@@ -1029,12 +1029,12 @@ app.get('/api/consulta-disponibilidad', async (req, res) => {
     
     const targetDate = targetMoment ? targetMoment.toDate() : null;
 
-    // Obtener datos de MySQL
+    // Obtener datos de PostgreSQL
     let configData;
     try {
       configData = await getConfigData();
     } catch (error) {
-      console.log('⚠️ Error obteniendo datos de MySQL, usando mock data:', error.message);
+      console.log('⚠️ Error obteniendo datos de PostgreSQL, usando mock data:', error.message);
       configData = developmentMockData;
     }
 
@@ -1746,9 +1746,9 @@ app.post('/api/cancela-cita', async (req, res) => {
       // Actualizar estado en base de datos
       try {
         await updateClientStatus(codigoReservaFinal, 'CANCELADA');
-        console.log(`✅ Estado actualizado en MySQL: ${codigoReservaFinal} -> CANCELADA`);
+        console.log(`✅ Estado actualizado en PostgreSQL: ${codigoReservaFinal} -> CANCELADA`);
       } catch (updateError) {
-        console.error('❌ Error actualizando MySQL:', updateError.message);
+        console.error('❌ Error actualizando PostgreSQL:', updateError.message);
         // No fallar la cancelación por este error
       }
       
@@ -1788,7 +1788,7 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     console.log(`📊 Parámetros: código=${codigo_reserva}, fecha=${fecha_reagendada}, hora=${hora_reagendada}`);
 
-    // PASO 2: Obtener información de la cita desde MySQL
+    // PASO 2: Obtener información de la cita desde PostgreSQL
     console.log('📋 Obteniendo información de la cita...');
     const clientData = await getClientDataByReservationCode(codigo_reserva);
     
@@ -1976,8 +1976,8 @@ Agendado por: Agente de WhatsApp`;
 
     console.log('✅ Evento creado exitosamente con ID personalizado');
 
-    // PASO 7: Actualizar fecha y hora en MySQL
-    console.log('📝 Actualizando fecha y hora en MySQL...');
+    // PASO 7: Actualizar fecha y hora en PostgreSQL
+    console.log('📝 Actualizando fecha y hora en PostgreSQL...');
     const updateDateTimeResult = await updateClientAppointmentDateTime(
       codigo_reserva, 
       fecha_reagendada, 
@@ -1985,9 +1985,9 @@ Agendado por: Agente de WhatsApp`;
     );
 
     if (!updateDateTimeResult) {
-      console.log('⚠️ No se pudo actualizar fecha/hora en MySQL');
+      console.log('⚠️ No se pudo actualizar fecha/hora en PostgreSQL');
     } else {
-      console.log('✅ Fecha y hora actualizadas en MySQL');
+      console.log('✅ Fecha y hora actualizadas en PostgreSQL');
     }
 
     // PASO 8: Cambiar estado a REAGENDADA
@@ -2081,7 +2081,7 @@ app.post('/api/confirma-cita', async (req, res) => {
 
     console.log(`📊 Código de reserva: ${codigo_reserva}`);
 
-    // PASO 2: Obtener información de la cita desde MySQL
+    // PASO 2: Obtener información de la cita desde PostgreSQL
     console.log('📋 Obteniendo información de la cita...');
     const clientData = await getClientDataByReservationCode(codigo_reserva);
     
@@ -2144,7 +2144,7 @@ app.get('/api/debug-cita/:codigo', async (req, res) => {
     const codigoReserva = req.params.codigo;
     console.log(`🔍 === DEBUG DE CITA: ${codigoReserva} ===`);
     
-    // PASO 1: Verificar datos en MySQL
+    // PASO 1: Verificar datos en PostgreSQL
     let clientData = null;
     try {
       clientData = await getClientDataByReservationCode(codigoReserva);
@@ -2691,7 +2691,7 @@ app.post('/api/reconocer-cliente', async (req, res) => {
 
     console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
 
-    // Buscar en MySQL (la función ya normaliza el número)
+    // Buscar en PostgreSQL (la función ya normaliza el número)
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -2758,7 +2758,7 @@ app.post('/api/verificar-cliente', async (req, res) => {
 
     console.log(`📞 Buscando cliente con teléfono: ${telefono}`);
 
-    // Buscar en MySQL (la función ya normaliza el número)
+    // Buscar en PostgreSQL (la función ya normaliza el número)
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -2926,7 +2926,7 @@ app.post('/api/verificar-cliente-seleccion-hora', async (req, res) => {
       }
     }
 
-    // Buscar en MySQL
+    // Buscar en PostgreSQL
     const pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     
     console.log(`✅ Resultados encontrados: ${pacientesEncontrados.length}`);
@@ -3227,8 +3227,8 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
       });
     }
 
-    // PASO 6: GUARDAR EN MYSQL
-    console.log('=== GUARDANDO DATOS EN MYSQL ===');
+    // PASO 6: GUARDAR EN POSTGRESQL
+    console.log('=== GUARDANDO DATOS EN POSTGRESQL ===');
     
     try {
       await saveClientDataOriginal(
@@ -3243,10 +3243,10 @@ app.post('/api/agenda-cita-inteligente', async (req, res) => {
         eventId,
         calendarId
       );
-      console.log('✅ Datos guardados en MySQL');
+      console.log('✅ Datos guardados en PostgreSQL');
 
     } catch (dbError) {
-      console.error('❌ Error guardando en MySQL:', dbError.message);
+      console.error('❌ Error guardando en PostgreSQL:', dbError.message);
       
       // Intentar eliminar el evento del calendario ya que no se pudo guardar en la base de datos
       try {
@@ -3339,7 +3339,7 @@ app.post('/api/agenda-cita', async (req, res) => {
       clientPhone: clientPhoneFromRequest 
     } = req.body;
 
-    // PASO 0: INTENTAR OBTENER INFORMACIÓN DEL PACIENTE DEL CACHÉ O MYSQL
+    // PASO 0: INTENTAR OBTENER INFORMACIÓN DEL PACIENTE DEL CACHÉ O POSTGRESQL
     let clientName = clientNameFromRequest;
     let clientEmail = clientEmailFromRequest;
     let clientPhone = clientPhoneFromRequest;
@@ -3365,26 +3365,26 @@ app.post('/api/agenda-cita', async (req, res) => {
           console.log(`   - Email actualizado desde caché: ${clientEmail}`);
         }
       } else {
-        // Si no está en caché, intentar desde MySQL
-        console.log('📋 Buscando información en MySQL...');
+        // Si no está en caché, intentar desde PostgreSQL
+        console.log('📋 Buscando información en PostgreSQL...');
         try {
           const pacientesEncontrados = await consultaDatosPacientePorTelefono(clientPhone);
           if (pacientesEncontrados && pacientesEncontrados.length > 0) {
             const pacienteMasReciente = pacientesEncontrados[0]; // Ya viene ordenado por más reciente
-            console.log('✅ Información encontrada en MySQL');
+            console.log('✅ Información encontrada en PostgreSQL');
             if (!clientName || clientName === '') {
               clientName = pacienteMasReciente.nombreCompleto || clientName;
-              console.log(`   - Nombre actualizado desde MySQL: ${clientName}`);
+              console.log(`   - Nombre actualizado desde PostgreSQL: ${clientName}`);
             }
             if (!clientEmail || clientEmail === 'Sin Email' || clientEmail === '') {
               clientEmail = pacienteMasReciente.correoElectronico || clientEmail;
-              console.log(`   - Email actualizado desde MySQL: ${clientEmail}`);
+              console.log(`   - Email actualizado desde PostgreSQL: ${clientEmail}`);
             }
             // Guardar en caché para próximas consultas
             savePatientInfo(clientPhone, clientName, clientEmail);
           }
         } catch (error) {
-          console.log('⚠️ Error buscando en MySQL:', error.message);
+          console.log('⚠️ Error buscando en PostgreSQL:', error.message);
         }
       }
     }
@@ -3747,16 +3747,16 @@ app.post('/api/debug-agenda', async (req, res) => {
     debug.push('✅ Action válida: schedule');
     debug.push(`✅ Datos básicos: calendar=${calendar}, service=${service}, date=${date}, time=${time}`);
     
-    // PASO 2: Configuración de MySQL
-    debug.push('\n📊 PASO 2: MYSQL');
+    // PASO 2: Configuración de base de datos
+    debug.push('\n📊 PASO 2: BASE DE DATOS (PostgreSQL)');
     let configData;
     try {
       configData = await getConfigData();
-      debug.push('✅ MySQL conectado correctamente');
+      debug.push('✅ PostgreSQL conectado correctamente');
       debug.push(`📊 Calendarios encontrados: ${configData.calendars ? configData.calendars.length : 0}`);
       debug.push(`📊 Servicios encontrados: ${configData.services ? configData.services.length : 0}`);
     } catch (error) {
-      debug.push(`❌ Error en MySQL: ${error.message}`);
+      debug.push(`❌ Error en PostgreSQL: ${error.message}`);
       return res.json({ debug: debug.join('\n') });
     }
     
@@ -4008,10 +4008,10 @@ app.get('/api/debug-martes-30', async (req, res) => {
     let configData;
     try {
       configData = await getConfigData();
-      debug.push(`✅ MySQL: CONECTADO`);
+      debug.push(`✅ PostgreSQL: CONECTADO`);
     } catch (error) {
       configData = developmentMockData;
-      debug.push(`⚠️ MySQL: ERROR - Usando Mock`);
+      debug.push(`⚠️ PostgreSQL: ERROR - Usando Mock`);
       debug.push(`   Error: ${error.message}`);
     }
     
@@ -4146,10 +4146,10 @@ app.get('/api/debug-dia/:fecha', async (req, res) => {
     let configData;
     try {
       configData = await getConfigData();
-      debug.push(`✅ MySQL: CONECTADO`);
+      debug.push(`✅ PostgreSQL: CONECTADO`);
     } catch (error) {
       configData = developmentMockData;
-      debug.push(`⚠️ MySQL: ERROR - Usando Mock`);
+      debug.push(`⚠️ PostgreSQL: ERROR - Usando Mock`);
     }
     
     const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
@@ -4283,7 +4283,7 @@ app.get('/api/debug-slots/:fecha', async (req, res) => {
     let configData;
     try {
       configData = await getConfigData();
-      resultado += `✅ MySQL conectado\n`;
+      resultado += `✅ PostgreSQL conectado\n`;
     } catch (error) {
       configData = developmentMockData;
       resultado += `⚠️ Usando datos simulados\n`;
@@ -4377,7 +4377,7 @@ app.get('/api/debug-busqueda-alternativos/:fechaObjetivo', async (req, res) => {
     let configData;
     try {
       configData = await getConfigData();
-      debug.push(`✅ MySQL conectado`);
+      debug.push(`✅ PostgreSQL conectado`);
     } catch (error) {
       configData = developmentMockData;
       debug.push(`⚠️ Usando Mock data`);
@@ -4739,7 +4739,7 @@ app.get('/api/debug-horarios/:fecha', async (req, res) => {
 
 /**
  * ENDPOINT: Consultar datos de paciente por número telefónico
- * Busca información del paciente en MySQL usando el número de teléfono
+ * Busca información del paciente en PostgreSQL usando el número de teléfono
  */
 app.get('/api/consulta-datos-paciente', async (req, res) => {
   try {
@@ -4770,15 +4770,19 @@ app.get('/api/consulta-datos-paciente', async (req, res) => {
     console.log(`🔍 Buscando paciente con teléfono: ${telefono}`);
     console.log(`📞 Teléfono normalizado: ${telefonoLimpio}`);
 
-    // Buscar datos del paciente en MySQL
+    // Buscar datos del paciente en PostgreSQL
     let pacientesEncontrados;
     try {
       pacientesEncontrados = await consultaDatosPacientePorTelefono(telefono);
     } catch (error) {
-      console.error('❌ Error consultando MySQL:', error.message);
+      console.error('❌ Error consultando PostgreSQL:', error.message);
+      const isTableMissing = error.code === '42P01' || (error.message && error.message.includes('does not exist'));
+      const message = isTableMissing
+        ? '❌ Las tablas no existen en la base de datos. Ejecute el script base.sql en su PostgreSQL (Railway: Data > Query, o con psql/cliente SQL).'
+        : '❌ Error interno: No se pudieron consultar los datos. Verifique la configuración de PostgreSQL.';
       return res.json({
         success: false,
-        message: '❌ Error interno: No se pudieron consultar los datos. Verifique la configuración de MySQL.',
+        message,
         data: []
       });
     }
@@ -5096,7 +5100,7 @@ const swaggerDocument = {
     '/api/reagenda-cita': {
       post: {
         summary: 'Reagenda una cita existente',
-        description: 'Reagenda una cita a una nueva fecha y hora usando el código de reserva. Elimina el evento anterior del calendario, crea uno nuevo, actualiza los datos en MySQL y envía correo de confirmación.',
+        description: 'Reagenda una cita a una nueva fecha y hora usando el código de reserva. Elimina el evento anterior del calendario, crea uno nuevo, actualiza los datos en PostgreSQL y envía correo de confirmación.',
         requestBody: {
           required: true,
           content: {
@@ -5148,7 +5152,7 @@ const swaggerDocument = {
     '/api/confirma-cita': {
       post: {
         summary: 'Confirma una cita existente',
-        description: 'Confirma la asistencia del cliente a una cita programada usando el código de reserva. Actualiza el estado de la cita a CONFIRMADA en MySQL.',
+        description: 'Confirma la asistencia del cliente a una cita programada usando el código de reserva. Actualiza el estado de la cita a CONFIRMADA en PostgreSQL.',
         requestBody: {
           required: true,
           content: {
@@ -5417,7 +5421,7 @@ const swaggerDocument = {
     '/api/consulta-datos-paciente': {
       get: {
         summary: 'Consultar datos de paciente por número telefónico',
-        description: 'Busca información del paciente en MySQL usando el número de teléfono. Devuelve solo el primer nombre del cliente.',
+        description: 'Busca información del paciente en PostgreSQL usando el número de teléfono. Devuelve solo el primer nombre del cliente.',
         parameters: [
           {
             name: 'telefono',

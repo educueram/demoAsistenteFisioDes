@@ -1330,14 +1330,14 @@ async function cancelEventUsingClientData(calendarId, codigoReserva, clientData)
       return false;
     }
     
-    console.log(`📊 Datos obtenidos de MySQL:`);
+    console.log(`📊 Datos obtenidos de PostgreSQL:`);
     console.log(`   - Cliente: ${clientData.clientName}`);
     console.log(`   - Fecha: ${clientData.date}`);
     console.log(`   - Hora: ${clientData.time}`);
     console.log(`   - Estado actual: ${clientData.estado}`);
     
     if (clientData.estado === 'CANCELADA') {
-      console.log(`⚠️ La cita ya está marcada como CANCELADA en MySQL`);
+      console.log(`⚠️ La cita ya está marcada como CANCELADA en PostgreSQL`);
       console.log(`🔄 Pero continuaremos verificando si el evento aún existe en Google Calendar...`);
     }
     
@@ -1352,7 +1352,7 @@ async function cancelEventUsingClientData(calendarId, codigoReserva, clientData)
     return success;
     
   } catch (error) {
-    console.error('💥 Error en cancelación con datos de MySQL:', error.message);
+    console.error('💥 Error en cancelación con datos de PostgreSQL:', error.message);
     return false;
   }
 }
