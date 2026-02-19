@@ -2230,8 +2230,9 @@ Agendado por: Agente de WhatsApp`;
 
 /**
  * ENDPOINT: Flujo completo de reagendamiento
- * Maneja todo el proceso: validar código → mostrar disponibilidad → seleccionar → confirmar → reagendar
+ * ELIMINADO - Usar /api/validar-codigo-reagendar + /api/consulta-disponibilidad + /api/reagenda-cita
  */
+/* ELIMINADO - ENDPOINT FLUJO-REAGENDAR
 app.post('/api/flujo-reagendar', async (req, res) => {
   try {
     console.log('🔄 === FLUJO DE REAGENDAMIENTO ===');
@@ -2727,6 +2728,7 @@ O si prefieres, puedes volver a ver las fechas disponibles escribiendo tu códig
     });
   }
 });
+ELIMINADO - FIN DEL ENDPOINT FLUJO-REAGENDAR */
 
 /**
  * ENDPOINT: Confirmar cita
