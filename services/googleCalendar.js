@@ -1484,60 +1484,59 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     console.log(`🔑 ID del evento final: ${eventId} (longitud: ${eventId.length})`);
     console.log(`🔑 Formato UUID puro: ✅`);
 
-    // PASO 1: Verificar si el evento ya existe (buscar por ID exacto)
+    // PASO 1: Buscar si ya existe un evento con el mismo código de reserva en el calendario
+    // Esto es importante para reagendamiento - si existe, lo actualizamos en lugar de crear uno nuevo
     let existingEvent = null;
-    try {
-      const getResponse = await calendar.events.get({
-        calendarId: calendarId,
-        eventId: eventId
-      });
-      existingEvent = getResponse.data;
-      console.log(`✅ Evento existente encontrado: ${existingEvent.id}`);
-      console.log(`⚠️ Nota: Este evento será actualizado, no creado desde cero`);
-    } catch (error) {
-      if (error.code === 404) {
-        console.log(`📋 Evento no existe, se creará uno nuevo`);
-      } else {
-        console.log(`⚠️ Error verificando evento existente: ${error.message}`);
-      }
-    }
+    let existingEventId = null;
     
-    // PASO 1.5: Verificar si ya existe un evento con el mismo código en el título
-    // (para detectar eventos duplicados cuando se usa UUID puro)
-    if (!existingEvent) {
-      console.log(`🔍 Verificando eventos duplicados con código: ${customEventId}`);
-      try {
-        const duplicateCheckResponse = await calendar.events.list({
-          calendarId: calendarId,
-          timeMin: eventData.startTime.toISOString(),
-          timeMax: eventData.endTime.toISOString(),
-          singleEvents: true
-        });
-        
-        const codeUpper = customEventId.toUpperCase();
-        const duplicateEvents = (duplicateCheckResponse.data.items || []).filter(evt => {
-          const eventTitle = evt.summary || '';
-          return eventTitle.includes(`(${codeUpper})`);
-        });
-        
-        if (duplicateEvents.length > 0) {
-          console.log(`⚠️ Se encontraron ${duplicateEvents.length} eventos con el mismo código de reserva`);
-          duplicateEvents.forEach(evt => {
-            console.log(`   - Evento duplicado: "${evt.summary}" (ID: ${evt.id})`);
-          });
-          console.log(`⚠️ Posible duplicación - revisar`);
-        } else {
-          console.log(`✅ No hay eventos duplicados con el código ${customEventId}`);
-        }
-      } catch (duplicateError) {
-        console.log(`⚠️ Error verificando duplicados: ${duplicateError.message}`);
+    console.log(`🔍 Buscando evento existente con código de reserva: ${customEventId}`);
+    try {
+      // Buscar en un rango amplio (30 días atrás, 90 días adelante) para encontrar el evento
+      const searchStartDate = new Date();
+      searchStartDate.setDate(searchStartDate.getDate() - 30);
+      const searchEndDate = new Date();
+      searchEndDate.setDate(searchEndDate.getDate() + 90);
+      
+      const searchResponse = await calendar.events.list({
+        calendarId: calendarId,
+        timeMin: searchStartDate.toISOString(),
+        timeMax: searchEndDate.toISOString(),
+        singleEvents: true,
+        orderBy: 'startTime'
+      });
+      
+      const codeUpper = customEventId.toUpperCase();
+      const allEvents = searchResponse.data.items || [];
+      
+      // Buscar evento con el código de reserva en el título
+      const foundEvent = allEvents.find(evt => {
+        const eventTitle = evt.summary || '';
+        return eventTitle.includes(`(${codeUpper})`);
+      });
+      
+      if (foundEvent) {
+        existingEvent = foundEvent;
+        existingEventId = foundEvent.id;
+        console.log(`✅ Evento existente encontrado con código ${customEventId}:`);
+        console.log(`   - ID: ${existingEventId}`);
+        console.log(`   - Título: ${existingEvent.summary}`);
+        console.log(`   - Fecha actual: ${existingEvent.start?.dateTime || existingEvent.start?.date}`);
+        console.log(`   ⚠️ Este evento será actualizado con la nueva fecha/hora`);
+        // Usar el ID del evento existente para actualizarlo
+        eventId = existingEventId;
+      } else {
+        console.log(`📋 No se encontró evento existente con código ${customEventId}, se creará uno nuevo`);
       }
+    } catch (searchError) {
+      console.log(`⚠️ Error buscando evento existente: ${searchError.message}`);
+      console.log(`   Continuando con creación de nuevo evento...`);
     }
 
     // PASO 2: Verificar conflictos (excluyendo el evento actual si existe)
     console.log('📋 Verificando conflictos de horario...');
     console.log(`   - timeMin: ${eventData.startTime.toISOString()}`);
     console.log(`   - timeMax: ${eventData.endTime.toISOString()}`);
+    console.log(`   - Excluyendo evento ID: ${eventId || 'ninguno'}`);
     
     const conflictingEventsResponse = await calendar.events.list({
       calendarId: calendarId,
@@ -1550,7 +1549,20 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
 
     const allEvents = conflictingEventsResponse.data.items || [];
     // Filtrar el evento actual (si existe) de los conflictos
-    const conflictingEvents = allEvents.filter(event => event.id !== eventId);
+    // Si estamos actualizando un evento existente, excluirlo de los conflictos
+    const conflictingEvents = allEvents.filter(event => {
+      // Excluir el evento que estamos actualizando
+      if (existingEventId && event.id === existingEventId) {
+        return false;
+      }
+      // Excluir eventos con el mismo código de reserva (por si acaso)
+      const codeUpper = customEventId.toUpperCase();
+      const eventTitle = event.summary || '';
+      if (eventTitle.includes(`(${codeUpper})`)) {
+        return false;
+      }
+      return true;
+    });
     
     console.log(`🔍 Total eventos en el horario: ${allEvents.length}`);
     console.log(`🔍 Eventos conflictivos (excluyendo el actual): ${conflictingEvents.length}`);
