@@ -2328,7 +2328,13 @@ app.post('/api/flujo-reagendar', async (req, res) => {
         }
       }
       
-      console.log(`📊 ServiceDuration encontrado: ${serviceDuration ? serviceDuration + ' minutos' : 'No'}`);
+      // GARANTÍA ABSOLUTA: Si después de todos los intentos no hay serviceDuration, usar 60 minutos por defecto
+      if (!serviceDuration) {
+        console.log(`⚠️ ADVERTENCIA: No se encontró serviceDuration después de todos los intentos. Usando 60 minutos por defecto.`);
+        serviceDuration = 60; // Duración por defecto de 60 minutos
+      }
+      
+      console.log(`📊 ServiceDuration encontrado: ${serviceDuration} minutos`);
       console.log(`📊 ServiceNumber final usado: ${serviceNumber}`);
       
       if (!calendarId) {
@@ -2339,19 +2345,10 @@ app.post('/api/flujo-reagendar', async (req, res) => {
           siguiente_paso: 'validar_codigo'
         });
       }
-      
-      if (!serviceDuration) {
-        console.error(`❌ Servicio no encontrado. ServiceNumber intentado: ${serviceNumber}`);
-        console.error(`📊 Servicios disponibles en configData:`, configData.services.slice(1).map(s => `ID: ${s[0]}, Duración: ${s[1]}`).join(' | '));
-        return res.json({ 
-          success: false,
-          respuesta: '❌ Error: No se encontró el servicio asociado a tu cita. Por favor, contacta con soporte.',
-          siguiente_paso: 'validar_codigo'
-        });
-      }
 
-      // Obtener próximos 4 días con disponibilidad
-      const today = moment().tz(config.timezone.default).startOf('day');
+      // Obtener próximos 4 días con disponibilidad (INCLUYENDO HOY)
+      const now = moment().tz(config.timezone.default);
+      const today = now.clone().startOf('day');
       const daysWithSlots = [];
       const maxDaysToCheck = 30;
       const totalDaysRequired = 4;
@@ -2366,6 +2363,17 @@ app.post('/api/flujo-reagendar', async (req, res) => {
         const workingHours = findWorkingHours('1', dayNumber, configData.hours);
         
         if (!workingHours) continue;
+        
+        // Si es hoy, verificar que no sea muy tarde (mínimo 1 hora de anticipación)
+        const isToday = checkDate.isSame(today, 'day');
+        if (isToday) {
+          const currentHour = now.hour();
+          const minimumHour = currentHour + 1; // Mínimo 1 hora de anticipación
+          // Si ya pasó la hora mínima, continuar con el siguiente día
+          if (minimumHour >= workingHours.end) {
+            continue;
+          }
+        }
 
         const isSaturday = jsDay === 6;
         let correctedHours;
@@ -2391,6 +2399,19 @@ app.post('/api/flujo-reagendar', async (req, res) => {
             availableSlots = slotResult.slots;
           } else if (Array.isArray(slotResult)) {
             availableSlots = slotResult;
+          }
+
+          // Si es hoy, filtrar horarios que ya pasaron o están muy cerca (menos de 1 hora)
+          if (isToday && availableSlots.length > 0) {
+            const currentHour = now.hour();
+            const currentMinute = now.minute();
+            const minimumHour = currentHour + 1; // Mínimo 1 hora de anticipación
+            
+            availableSlots = availableSlots.filter(slot => {
+              const slotHour = parseInt(slot.split(':')[0]);
+              // Incluir solo horarios que sean al menos 1 hora después de ahora
+              return slotHour >= minimumHour;
+            });
           }
 
           if (availableSlots.length > 0) {
