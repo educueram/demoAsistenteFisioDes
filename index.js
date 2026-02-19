@@ -987,6 +987,7 @@ app.get('/', (req, res) => {
       consulta_disponibilidad: `GET ${serverUrl}/api/consulta-disponibilidad`,
       agenda_cita: `POST ${serverUrl}/api/agenda-cita`,
       cancela_cita: `POST ${serverUrl}/api/cancela-cita`,
+      validar_codigo_reagendar: `POST ${serverUrl}/api/validar-codigo-reagendar`,
       reagenda_cita: `POST ${serverUrl}/api/reagenda-cita`,
       confirma_cita: `POST ${serverUrl}/api/confirma-cita`,
       carga_datos_iniciales: `GET ${serverUrl}/api/carga-datos-iniciales?celular={numero}`,
@@ -1770,6 +1771,94 @@ app.post('/api/cancela-cita', async (req, res) => {
 });
 
 /**
+ * ENDPOINT: Validar código de reagendar
+ */
+app.post('/api/validar-codigo-reagendar', async (req, res) => {
+  try {
+    console.log('🔍 === VALIDACIÓN DE CÓDIGO PARA REAGENDAR ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+    
+    const { codigo_reserva } = req.body;
+
+    // PASO 1: Validar parámetros
+    if (!codigo_reserva) {
+      return res.json({ 
+        success: false,
+        respuesta: '⚠️ Error: Se requiere el código de reserva.' 
+      });
+    }
+
+    console.log(`📊 Código recibido: ${codigo_reserva}`);
+
+    // PASO 2: Obtener información de la cita desde PostgreSQL
+    console.log('📋 Obteniendo información de la cita...');
+    const clientData = await getClientDataByReservationCode(codigo_reserva);
+    
+    if (!clientData) {
+      console.log(`❌ No se encontró cita con código: ${codigo_reserva}`);
+      return res.json({ 
+        success: false,
+        respuesta: `❌ No se encontró ninguna cita con el código de reserva ${codigo_reserva.toUpperCase()}. Verifica que el código sea correcto.` 
+      });
+    }
+
+    console.log('✅ Información de la cita obtenida:', clientData);
+
+    // PASO 3: Verificar que la cita no esté cancelada
+    if (clientData.estado === 'CANCELADA') {
+      return res.json({ 
+        success: false,
+        respuesta: `⚠️ Esta cita ya fue cancelada. Si deseas agendar nuevamente, por favor comunícate con nosotros.` 
+      });
+    }
+
+    // PASO 4: Formatear información de la cita actual
+    const fechaActual = formatDateToSpanishPremium(clientData.date);
+    const horaActual = formatTimeTo12Hour(clientData.time);
+    
+    const fechaCompleta = moment.tz(clientData.date, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+
+    // PASO 5: Preparar respuesta con información de la cita
+    const respuesta = `✅ Código de reserva válido 🎟️
+
+📋 *Información de tu cita actual:*
+
+🎟️ **Código de Reserva**: ${codigo_reserva.toUpperCase()}
+📅 **Fecha Actual**: ${fechaCompleta}
+🕐 **Hora Actual**: ${horaActual}
+👩‍⚕️ **Especialista**: ${clientData.profesionalName || 'Lic. Iris Valeria Gopar'}
+📅 **Servicio**: ${clientData.serviceName || 'Consulta presencial'}
+
+🔄 *Ahora te mostraré las próximas fechas disponibles para reagendar tu cita.*`;
+
+    console.log('✅ Código validado exitosamente');
+    return res.json({ 
+      success: true,
+      respuesta: respuesta,
+      datosCita: {
+        codigo_reserva: codigo_reserva.toUpperCase(),
+        fecha_actual: clientData.date,
+        hora_actual: clientData.time,
+        servicio: clientData.serviceNumber || '1',
+        nombre_cliente: clientData.clientName,
+        email_cliente: clientData.clientEmail,
+        telefono_cliente: clientData.clientPhone,
+        especialista: clientData.profesionalName || 'Lic. Iris Valeria Gopar',
+        servicio_nombre: clientData.serviceName || 'Consulta presencial'
+      }
+    });
+
+  } catch (error) {
+    console.error('💥 Error en validación de código:', error.message);
+    console.error('Stack:', error.stack);
+    return res.json({ 
+      success: false,
+      respuesta: '🤖 Ha ocurrido un error inesperado al validar el código de reserva.' 
+    });
+  }
+});
+
+/**
  * ENDPOINT: Reagendar cita
  */
 app.post('/api/reagenda-cita', async (req, res) => {
@@ -2092,23 +2181,41 @@ Agendado por: Agente de WhatsApp`;
     // PASO 10: Preparar respuesta con resumen
     const time12h = formatTimeTo12Hour(hora_reagendada);
     const fechaFormateada = moment.tz(fecha_reagendada, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+    const oldTime12h = formatTimeTo12Hour(oldTime);
+    const oldFechaFormateada = moment.tz(oldDate, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
 
     const finalResponse = {
+      success: true,
       respuesta: `🔄 ¡Cita reagendada exitosamente! ✨
 
+📋 *Resumen de cambios:*
+
+📅 **Fecha Anterior**: ${oldFechaFormateada}
+🕐 **Hora Anterior**: ${oldTime12h}
+
+➡️
+
+📅 **Nueva Fecha**: ${fechaFormateada}
+🕐 **Nueva Hora**: ${time12h}
+
 📅 Detalles de tu nueva cita:
-• Fecha: ${fechaFormateada}
-• Hora: ${time12h}
 • Cliente: ${clientData.clientName}
 • Servicio: ${clientData.serviceName}
 • Especialista: ${clientData.profesionalName}
 
 🎟️ TU CÓDIGO DE RESERVA: ${codigo_reserva.toUpperCase()}
 
-✅ Tu cita ha sido reagendada correctamente.
+✅ Tu cita ha sido reagendada correctamente en el calendario.
 📧 Recibirás un correo de confirmación.
 
-¡Gracias por confiar en nosotros! 🌟`
+¡Gracias por confiar en nosotros! 🌟`,
+      cambios: {
+        fecha_anterior: oldDate,
+        hora_anterior: oldTime,
+        fecha_nueva: fecha_reagendada,
+        hora_nueva: hora_reagendada,
+        codigo_reserva: codigo_reserva.toUpperCase()
+      }
     };
 
     console.log('🎉 === REAGENDAMIENTO EXITOSO ===');
