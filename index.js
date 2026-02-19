@@ -1825,12 +1825,17 @@ app.post('/api/reagenda-cita', async (req, res) => {
 
     // PASO 4: Eliminar evento antiguo del calendario
     console.log('🗑️ Eliminando evento antiguo del calendario...');
+    console.log(`   - Código de reserva: ${codigo_reserva}`);
+    console.log(`   - Calendar ID: ${calendarId}`);
+    
     const cancelResult = await cancelEventByReservationCodeOriginal(calendarId, codigo_reserva);
     
     if (cancelResult.success) {
-      console.log('✅ Evento antiguo eliminado exitosamente');
+      console.log('✅ Evento antiguo eliminado exitosamente del calendario');
     } else {
-      console.log('⚠️ No se pudo eliminar el evento antiguo (puede que ya no exista)');
+      console.log('⚠️ No se pudo eliminar el evento antiguo');
+      console.log(`   - Mensaje: ${cancelResult.message || 'No se encontró el evento'}`);
+      console.log('   - Continuando con la creación del nuevo evento...');
     }
 
     // PASO 5: Validar nueva fecha/hora (igual que en agenda-cita)
@@ -1943,7 +1948,16 @@ app.post('/api/reagenda-cita', async (req, res) => {
     console.log(`📅 Nueva fecha/hora: ${startTimeMoment.format('YYYY-MM-DD HH:mm')}`);
 
     // PASO 6: Crear evento con ID personalizado en Google Calendar
-    console.log('📝 Creando evento en el calendario con ID personalizado...');
+    console.log('📝 === CREACIÓN DE EVENTO EN CALENDARIO ===');
+    console.log(`📅 Calendar ID: ${calendarId}`);
+    console.log(`🎟️ Código de reserva: ${codigo_reserva}`);
+    console.log(`📊 Nueva fecha/hora:`);
+    console.log(`   - Fecha: ${fecha_reagendada}`);
+    console.log(`   - Hora: ${hora_reagendada}`);
+    console.log(`   - StartTime (moment): ${startTimeMoment.format('YYYY-MM-DD HH:mm:ss z')}`);
+    console.log(`   - EndTime (moment): ${endTimeMoment.format('YYYY-MM-DD HH:mm:ss z')}`);
+    console.log(`   - StartTime (Date): ${startTimeMoment.toDate().toISOString()}`);
+    console.log(`   - EndTime (Date): ${endTimeMoment.toDate().toISOString()}`);
     
     const eventTitle = `Cita: ${clientData.clientName} (${codigo_reserva})`;
     const eventDescription = `
@@ -1962,19 +1976,64 @@ Agendado por: Agente de WhatsApp`;
       startTime: startTimeMoment.toDate(),
       endTime: endTimeMoment.toDate()
     };
+    
+    console.log(`📋 Datos del evento:`);
+    console.log(`   - Título: ${eventTitle}`);
+    console.log(`   - Cliente: ${clientData.clientName}`);
 
     // Usar createEventWithCustomId para crear el nuevo evento con el código como ID
+    console.log('🔄 Intentando crear evento en calendario...');
+    console.log(`   - Calendar ID: ${calendarId}`);
+    console.log(`   - Fecha: ${fecha_reagendada}`);
+    console.log(`   - Hora: ${hora_reagendada}`);
+    console.log(`   - StartTime: ${startTimeMoment.format('YYYY-MM-DD HH:mm:ss z')}`);
+    console.log(`   - EndTime: ${endTimeMoment.format('YYYY-MM-DD HH:mm:ss z')}`);
+    
     const createResult = await createEventWithCustomId(calendarId, eventData, codigo_reserva);
 
     if (!createResult.success) {
-      console.log('❌ Error creando evento');
+      console.log('❌ Error creando evento en calendario');
       console.log('❌ Detalle del error:', createResult.error);
+      console.log('❌ Mensaje:', createResult.message);
       return res.json({ 
-        respuesta: `❌ Error reagendando la cita en el calendario: ${createResult.error || 'El horario podría estar ocupado'}` 
+        respuesta: `❌ Error reagendando la cita en el calendario: ${createResult.error || createResult.message || 'El horario podría estar ocupado'}` 
       });
     }
 
-    console.log('✅ Evento creado exitosamente con ID personalizado');
+    // Verificar que el evento realmente se creó
+    if (!createResult.event || !createResult.event.id) {
+      console.log('❌ ERROR CRÍTICO: createResult.success es true pero no hay evento creado');
+      console.log('❌ createResult completo:', JSON.stringify(createResult, null, 2));
+      return res.json({ 
+        respuesta: `❌ Error: La cita se procesó pero no se pudo crear en el calendario. Por favor, contacta al soporte.` 
+      });
+    }
+
+    console.log('✅ Evento creado exitosamente en calendario');
+    console.log(`   - Event ID: ${createResult.event.id}`);
+    console.log(`   - Event Summary: ${createResult.event.summary}`);
+    console.log(`   - Event Start: ${createResult.event.start?.dateTime || createResult.event.start?.date}`);
+    console.log(`   - Event End: ${createResult.event.end?.dateTime || createResult.event.end?.date}`);
+    
+    // Verificación adicional: Confirmar que el evento existe en el calendario
+    try {
+      const calendar = await getCalendarInstance();
+      const verifyEvent = await calendar.events.get({
+        calendarId: calendarId,
+        eventId: createResult.event.id
+      });
+      
+      if (verifyEvent.data) {
+        console.log('✅ VERIFICACIÓN: Evento confirmado en calendario');
+        console.log(`   - Título verificado: ${verifyEvent.data.summary}`);
+        console.log(`   - Fecha/hora verificada: ${verifyEvent.data.start?.dateTime || verifyEvent.data.start?.date}`);
+      } else {
+        console.log('⚠️ ADVERTENCIA: No se pudo verificar el evento en el calendario');
+      }
+    } catch (verifyError) {
+      console.log('⚠️ ADVERTENCIA: Error al verificar evento en calendario:', verifyError.message);
+      // No fallar el proceso por esto, solo registrar la advertencia
+    }
 
     // PASO 7: Actualizar fecha y hora en PostgreSQL
     console.log('📝 Actualizando fecha y hora en PostgreSQL...');
