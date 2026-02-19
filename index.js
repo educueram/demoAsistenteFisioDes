@@ -2229,6 +2229,422 @@ Agendado por: Agente de WhatsApp`;
 });
 
 /**
+ * ENDPOINT: Flujo completo de reagendamiento
+ * Maneja todo el proceso: validar código → mostrar disponibilidad → seleccionar → confirmar → reagendar
+ */
+app.post('/api/flujo-reagendar', async (req, res) => {
+  try {
+    console.log('🔄 === FLUJO DE REAGENDAMIENTO ===');
+    console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+    
+    const { 
+      paso, 
+      codigo_reserva, 
+      fecha_reagendada, 
+      hora_reagendada,
+      confirmar 
+    } = req.body;
+
+    // PASO 1: VALIDAR CÓDIGO
+    if (paso === 'validar_codigo' || (!paso && codigo_reserva && !fecha_reagendada)) {
+      if (!codigo_reserva) {
+        return res.json({ 
+          success: false,
+          respuesta: '⚠️ Por favor, proporciona tu código de reserva para reagendar tu cita.',
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      console.log(`📊 Validando código: ${codigo_reserva}`);
+      const clientData = await getClientDataByReservationCode(codigo_reserva);
+      
+      if (!clientData) {
+        return res.json({ 
+          success: false,
+          respuesta: `❌ No se encontró ninguna cita con el código de reserva ${codigo_reserva.toUpperCase()}. Verifica que el código sea correcto.`,
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      if (clientData.estado === 'CANCELADA') {
+        return res.json({ 
+          success: false,
+          respuesta: `⚠️ Esta cita ya fue cancelada. Si deseas agendar nuevamente, por favor comunícate con nosotros.`,
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      const fechaActual = moment.tz(clientData.date, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+      const horaActual = formatTimeTo12Hour(clientData.time);
+
+      // Obtener automáticamente las próximas fechas disponibles
+      console.log('📅 Obteniendo fechas disponibles automáticamente...');
+      const serviceNumber = clientData.serviceNumber || '1';
+      
+      // Usar la lógica de consulta-disponibilidad para obtener los próximos 4 días
+      let configData;
+      try {
+        configData = await getConfigData();
+      } catch (error) {
+        console.error('❌ Error obteniendo configuración:', error.message);
+        return res.json({ 
+          success: false,
+          respuesta: '❌ Error obteniendo configuración. Por favor, intenta más tarde.',
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      const calendarId = findData('1', configData.calendars, 0, 1);
+      const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+      
+      if (!calendarId || !serviceDuration) {
+        return res.json({ 
+          success: false,
+          respuesta: '❌ Error obteniendo datos del calendario. Por favor, intenta más tarde.',
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      // Obtener próximos 4 días con disponibilidad
+      const today = moment().tz(config.timezone.default).startOf('day');
+      const daysWithSlots = [];
+      const maxDaysToCheck = 30;
+      const totalDaysRequired = 4;
+
+      for (let i = 0; i < maxDaysToCheck && daysWithSlots.length < totalDaysRequired; i++) {
+        const checkDate = today.clone().add(i, 'days');
+        const jsDay = checkDate.toDate().getDay();
+        
+        if (jsDay === 0) continue; // Saltar domingos
+        
+        const dayNumber = jsDay;
+        const workingHours = findWorkingHours('1', dayNumber, configData.hours);
+        
+        if (!workingHours) continue;
+
+        const isSaturday = jsDay === 6;
+        let correctedHours;
+        if (isSaturday) {
+          correctedHours = {
+            start: config.workingHours.saturday.startHour || 10,
+            end: config.workingHours.saturday.endHour || 14,
+            dayName: workingHours.dayName
+          };
+        } else {
+          correctedHours = {
+            start: 10,
+            end: 18,
+            dayName: workingHours.dayName
+          };
+        }
+
+        try {
+          const slotResult = await findAvailableSlots(calendarId, checkDate.toDate(), parseInt(serviceDuration), correctedHours);
+          let availableSlots = [];
+          
+          if (typeof slotResult === 'object' && slotResult.slots !== undefined) {
+            availableSlots = slotResult.slots;
+          } else if (Array.isArray(slotResult)) {
+            availableSlots = slotResult;
+          }
+
+          if (availableSlots.length > 0) {
+            const dateStr = checkDate.format('YYYY-MM-DD');
+            daysWithSlots.push({
+              date: checkDate.toDate(),
+              dateStr: dateStr,
+              slots: availableSlots
+            });
+          }
+        } catch (error) {
+          console.error(`Error consultando día ${checkDate.format('YYYY-MM-DD')}:`, error.message);
+          continue;
+        }
+      }
+
+      if (daysWithSlots.length === 0) {
+        return res.json({ 
+          success: true,
+          respuesta: `✅ Código de reserva válido 🎟️
+
+📋 *Información de tu cita actual:*
+
+🎟️ **Código de Reserva**: ${codigo_reserva.toUpperCase()}
+📅 **Fecha Actual**: ${fechaActual}
+🕐 **Hora Actual**: ${horaActual}
+👩‍⚕️ **Especialista**: ${clientData.profesionalName || 'Lic. Iris Valeria Gopar'}
+📅 **Servicio**: ${clientData.serviceName || 'Consulta presencial'}
+
+😔 No encontré horarios disponibles en los próximos días. 
+
+💡 Por favor, indícame una fecha específica que te gustaría consultar (por ejemplo: "25 de febrero" o "2026-02-25") y te mostraré los horarios disponibles para ese día.`,
+          datosCita: {
+            codigo_reserva: codigo_reserva.toUpperCase(),
+            fecha_actual: clientData.date,
+            hora_actual: clientData.time,
+            servicio: serviceNumber,
+            nombre_cliente: clientData.clientName,
+            email_cliente: clientData.clientEmail,
+            telefono_cliente: clientData.clientPhone,
+            especialista: clientData.profesionalName || 'Lic. Iris Valeria Gopar',
+            servicio_nombre: clientData.serviceName || 'Consulta presencial'
+          },
+          siguiente_paso: 'pedir_fecha_especifica'
+        });
+      }
+
+      // Formatear respuesta con fechas disponibles
+      let responseText = `✅ Código de reserva válido 🎟️
+
+📋 *Información de tu cita actual:*
+
+🎟️ **Código de Reserva**: ${codigo_reserva.toUpperCase()}
+📅 **Fecha Actual**: ${fechaActual}
+🕐 **Hora Actual**: ${horaActual}
+👩‍⚕️ **Especialista**: ${clientData.profesionalName || 'Lic. Iris Valeria Gopar'}
+📅 **Servicio**: ${clientData.serviceName || 'Consulta presencial'}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📅 *Estas son las próximas fechas disponibles para reagendar:*
+
+`;
+
+      let letterIndex = 0;
+      const dateMapping = {};
+
+      for (const dayData of daysWithSlots) {
+        const dayMoment = moment.tz(dayData.dateStr, 'YYYY-MM-DD', config.timezone.default);
+        const dayLabelRaw = dayMoment.format('dddd D [de] MMMM');
+        const dayLabel = dayLabelRaw.charAt(0).toUpperCase() + dayLabelRaw.slice(1);
+
+        responseText += `\n🗓️ *${dayLabel}*\n`;
+
+        const formattedSlots = dayData.slots.map((slot) => {
+          const letter = String.fromCharCode(65 + letterIndex);
+          const time12h = formatTimeTo12Hour(slot);
+          
+          dateMapping[letter] = {
+            date: dayData.dateStr,
+            time: slot,
+            dayName: dayLabel
+          };
+          
+          letterIndex++;
+          return `${getCircledLetter(letter)} ${time12h}`;
+        });
+
+        responseText += formattedSlots.join('    ') + '\n';
+      }
+
+      responseText += `\n💡 Escribe la letra del horario que prefieras (A, B, C, etc.)`;
+
+      return res.json({ 
+        success: true,
+        respuesta: responseText,
+        datosCita: {
+          codigo_reserva: codigo_reserva.toUpperCase(),
+          fecha_actual: clientData.date,
+          hora_actual: clientData.time,
+          servicio: serviceNumber,
+          nombre_cliente: clientData.clientName,
+          email_cliente: clientData.clientEmail,
+          telefono_cliente: clientData.clientPhone,
+          especialista: clientData.profesionalName || 'Lic. Iris Valeria Gopar',
+          servicio_nombre: clientData.serviceName || 'Consulta presencial'
+        },
+        dateMapping: dateMapping,
+        siguiente_paso: 'seleccionar_horario'
+      });
+    }
+
+    // PASO 2: SELECCIONAR HORARIO (cuando el usuario elige una letra o proporciona fecha/hora)
+    if (paso === 'seleccionar_horario' || (!paso && codigo_reserva && fecha_reagendada && hora_reagendada && !confirmar)) {
+      if (!codigo_reserva || !fecha_reagendada || !hora_reagendada) {
+        return res.json({ 
+          success: false,
+          respuesta: '⚠️ Faltan datos. Necesito el código de reserva, fecha y hora para continuar.',
+          siguiente_paso: 'seleccionar_horario'
+        });
+      }
+
+      const clientData = await getClientDataByReservationCode(codigo_reserva);
+      if (!clientData) {
+        return res.json({ 
+          success: false,
+          respuesta: `❌ No se encontró la cita con código ${codigo_reserva.toUpperCase()}.`,
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      const fechaFormateada = moment.tz(fecha_reagendada, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+      const horaFormateada = formatTimeTo12Hour(hora_reagendada);
+      const fechaActual = moment.tz(clientData.date, config.timezone.default).format('dddd, D [de] MMMM [de] YYYY');
+      const horaActual = formatTimeTo12Hour(clientData.time);
+
+      const respuesta = `📋 *Resumen del reagendamiento:*
+
+🔄 *Cambios propuestos:*
+
+📅 **Fecha Anterior**: ${fechaActual}
+🕐 **Hora Anterior**: ${horaActual}
+
+➡️
+
+📅 **Nueva Fecha**: ${fechaFormateada}
+🕐 **Nueva Hora**: ${horaFormateada}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📋 *Detalles de tu cita:*
+• Cliente: ${clientData.clientName}
+• Servicio: ${clientData.serviceName}
+• Especialista: ${clientData.profesionalName || 'Lic. Iris Valeria Gopar'}
+• Código de Reserva: ${codigo_reserva.toUpperCase()}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+¿Está todo correcto? 
+
+Escribe *"sí"* o *"confirmar"* para reagendar tu cita, o *"no"* para modificar los datos.`;
+
+      return res.json({ 
+        success: true,
+        respuesta: respuesta,
+        datosReagendamiento: {
+          codigo_reserva: codigo_reserva.toUpperCase(),
+          fecha_reagendada: fecha_reagendada,
+          hora_reagendada: hora_reagendada,
+          fecha_anterior: clientData.date,
+          hora_anterior: clientData.time
+        },
+        siguiente_paso: 'confirmar'
+      });
+    }
+
+    // PASO 3: CONFIRMAR Y REAGENDAR
+    if (paso === 'confirmar' || (!paso && codigo_reserva && fecha_reagendada && hora_reagendada && confirmar)) {
+      if (!codigo_reserva || !fecha_reagendada || !hora_reagendada) {
+        return res.json({ 
+          success: false,
+          respuesta: '⚠️ Faltan datos para reagendar. Por favor, proporciona código, fecha y hora.',
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+
+      // Si confirmar es false o "no", permitir modificar
+      if (confirmar === false || (typeof confirmar === 'string' && confirmar.toLowerCase().includes('no'))) {
+        return res.json({ 
+          success: true,
+          respuesta: `🔄 Entendido. Puedes modificar los datos.
+
+Por favor, indícame:
+• Una nueva fecha (por ejemplo: "25 de febrero" o "2026-02-25")
+• O una nueva hora (por ejemplo: "15:00" o "3:00 PM")
+
+O si prefieres, puedes volver a ver las fechas disponibles escribiendo tu código de reserva nuevamente.`,
+          siguiente_paso: 'modificar_datos'
+        });
+      }
+
+      // Si confirma, usar el endpoint existente de reagenda-cita
+      console.log('✅ Confirmación recibida, ejecutando reagendamiento...');
+      
+      // Crear un request mock para reutilizar la lógica del endpoint /api/reagenda-cita
+      const mockReq = {
+        body: {
+          codigo_reserva: codigo_reserva,
+          fecha_reagendada: fecha_reagendada,
+          hora_reagendada: hora_reagendada
+        }
+      };
+      
+      // Crear un response mock para capturar la respuesta
+      let capturedResponse = null;
+      const mockRes = {
+        json: (data) => {
+          capturedResponse = data;
+        }
+      };
+
+      // Llamar directamente al handler del endpoint /api/reagenda-cita
+      // Nota: Esto reutiliza toda la lógica del endpoint existente
+      try {
+        // Simular la llamada al endpoint usando axios para mantener la separación
+        const axios = require('axios');
+        let baseUrl = `http://localhost:${PORT}`;
+        
+        // Intentar obtener la URL del request si está disponible
+        if (req.protocol && req.get('host')) {
+          baseUrl = `${req.protocol}://${req.get('host')}`;
+        }
+
+        console.log(`📡 Ejecutando reagendamiento a través de /api/reagenda-cita`);
+        const reagendaResponse = await axios.post(`${baseUrl}/api/reagenda-cita`, mockReq.body, {
+          timeout: 30000,
+          validateStatus: () => true // Aceptar cualquier status para manejar errores
+        });
+        
+        // El endpoint /api/reagenda-cita devuelve { respuesta, cambios, success }
+        if (reagendaResponse.data) {
+          const responseData = reagendaResponse.data;
+          
+          // Si tiene success: true o no tiene success: false, considerarlo exitoso
+          const isSuccess = responseData.success !== false && responseData.respuesta;
+          
+          return res.json({
+            success: isSuccess,
+            respuesta: responseData.respuesta || 'Error al reagendar la cita.',
+            cambios: responseData.cambios,
+            siguiente_paso: isSuccess ? 'completado' : 'confirmar'
+          });
+        } else {
+          return res.json({
+            success: false,
+            respuesta: 'Error al procesar el reagendamiento. Por favor, intenta nuevamente.',
+            siguiente_paso: 'confirmar'
+          });
+        }
+      } catch (error) {
+        console.error('❌ Error ejecutando reagendamiento:', error.message);
+        console.error('Stack:', error.stack);
+        
+        // Si hay respuesta en el error, usarla
+        if (error.response && error.response.data && error.response.data.respuesta) {
+          return res.json({
+            success: false,
+            respuesta: error.response.data.respuesta,
+            siguiente_paso: 'confirmar'
+          });
+        }
+        
+        return res.json({
+          success: false,
+          respuesta: '❌ Error al procesar el reagendamiento. Por favor, intenta nuevamente o contacta con soporte.',
+          siguiente_paso: 'confirmar'
+        });
+      }
+    }
+
+    // Si no se reconoce el paso, devolver error
+    return res.json({ 
+      success: false,
+      respuesta: '⚠️ Paso no reconocido. Por favor, proporciona un paso válido: validar_codigo, seleccionar_horario, o confirmar.',
+      siguiente_paso: 'validar_codigo'
+    });
+
+  } catch (error) {
+    console.error('💥 Error en flujo de reagendamiento:', error.message);
+    console.error('Stack:', error.stack);
+    return res.json({ 
+      success: false,
+      respuesta: '🤖 Ha ocurrido un error inesperado en el proceso de reagendamiento.',
+      siguiente_paso: 'validar_codigo'
+    });
+  }
+});
+
+/**
  * ENDPOINT: Confirmar cita
  */
 app.post('/api/confirma-cita', async (req, res) => {

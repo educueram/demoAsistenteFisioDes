@@ -440,6 +440,7 @@ async function getClientDataByReservationCode(codigoReserva) {
         TO_CHAR(c.FechaCita, 'YYYY-MM-DD') AS date,
         TO_CHAR(c.HoraCita, 'HH24:MI') AS time,
         s.NombreServicio AS "serviceName",
+        s.IdServicio AS "serviceNumber",
         c.Estado AS estado
       FROM "citas" c
       INNER JOIN "clientes" cl ON c.IdCliente = cl.IdCliente
@@ -462,6 +463,7 @@ async function getClientDataByReservationCode(codigoReserva) {
         date: row.date,
         time: row.time,
         serviceName: row.serviceName,
+        serviceNumber: row.serviceNumber ? row.serviceNumber.toString() : '1',
         estado: row.estado
       };
 
