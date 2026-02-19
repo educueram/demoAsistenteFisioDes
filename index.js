@@ -2283,10 +2283,15 @@ app.post('/api/flujo-reagendar', async (req, res) => {
       // Obtener el número de servicio de la cita
       let serviceNumber = clientData.serviceNumber || '1';
       
-      // Asegurar que serviceNumber sea string
+      // Asegurar que serviceNumber sea string y válido
+      if (!serviceNumber || serviceNumber === 'null' || serviceNumber === 'undefined') {
+        serviceNumber = '1';
+      }
       if (typeof serviceNumber !== 'string') {
         serviceNumber = String(serviceNumber);
       }
+      // Limpiar espacios y caracteres extraños
+      serviceNumber = serviceNumber.trim();
       
       console.log(`📊 ServiceNumber obtenido de la cita: ${serviceNumber}`);
       
@@ -2294,45 +2299,58 @@ app.post('/api/flujo-reagendar', async (req, res) => {
       let configData;
       try {
         configData = await getConfigData();
-        console.log(`📊 Servicios disponibles en configData: ${configData.services.length} registros`);
+        console.log(`📊 Servicios disponibles en configData: ${configData.services ? configData.services.length : 0} registros`);
+        
+        // Validar que configData.services existe y es un array
+        if (!configData.services || !Array.isArray(configData.services) || configData.services.length === 0) {
+          console.error('⚠️ ADVERTENCIA: configData.services está vacío o no es válido. Usando 60 minutos por defecto.');
+          // Continuar con serviceDuration = 60 por defecto
+        }
       } catch (error) {
         console.error('❌ Error obteniendo configuración:', error.message);
-        return res.json({ 
-          success: false,
-          respuesta: '❌ Error obteniendo configuración. Por favor, intenta más tarde.',
-          siguiente_paso: 'validar_codigo'
-        });
+        // NO devolver error, usar valores por defecto
+        console.log('⚠️ Usando valores por defecto debido a error en configuración');
       }
 
-      const calendarId = findData('1', configData.calendars, 0, 1);
+      const calendarId = findData('1', configData?.calendars || [], 0, 1);
       console.log(`📅 Calendar ID encontrado: ${calendarId ? 'Sí' : 'No'}`);
       
-      // Buscar el servicio - intentar con diferentes formatos
-      let serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+      // Inicializar serviceDuration con null para forzar el fallback si es necesario
+      let serviceDuration = null;
       
-      // Si no se encuentra, intentar con el número como entero
-      if (!serviceDuration && !isNaN(serviceNumber)) {
-        console.log(`⚠️ Servicio ${serviceNumber} no encontrado como string, intentando como número`);
-        serviceDuration = findData(parseInt(serviceNumber), configData.services, 0, 1);
-      }
-      
-      // Si aún no se encuentra, intentar con '1' como fallback
-      if (!serviceDuration) {
-        console.log(`⚠️ Servicio ${serviceNumber} no encontrado, usando servicio '1' como fallback`);
-        serviceNumber = '1';
-        serviceDuration = findData('1', configData.services, 0, 1);
+      // Solo intentar buscar el servicio si configData.services existe y tiene datos
+      if (configData?.services && Array.isArray(configData.services) && configData.services.length > 0) {
+        // Buscar el servicio - intentar con diferentes formatos
+        serviceDuration = findData(serviceNumber, configData.services, 0, 1);
         
-        // Si '1' tampoco funciona, intentar con número 1
+        // Si no se encuentra, intentar con el número como entero
+        if (!serviceDuration && !isNaN(serviceNumber) && serviceNumber !== '') {
+          console.log(`⚠️ Servicio ${serviceNumber} no encontrado como string, intentando como número`);
+          serviceDuration = findData(parseInt(serviceNumber), configData.services, 0, 1);
+        }
+        
+        // Si aún no se encuentra, intentar con '1' como fallback
         if (!serviceDuration) {
-          serviceDuration = findData(1, configData.services, 0, 1);
+          console.log(`⚠️ Servicio ${serviceNumber} no encontrado, usando servicio '1' como fallback`);
+          serviceNumber = '1';
+          serviceDuration = findData('1', configData.services, 0, 1);
+          
+          // Si '1' tampoco funciona, intentar con número 1
+          if (!serviceDuration) {
+            serviceDuration = findData(1, configData.services, 0, 1);
+          }
         }
       }
       
       // GARANTÍA ABSOLUTA: Si después de todos los intentos no hay serviceDuration, usar 60 minutos por defecto
-      if (!serviceDuration) {
-        console.log(`⚠️ ADVERTENCIA: No se encontró serviceDuration después de todos los intentos. Usando 60 minutos por defecto.`);
+      // Esto NUNCA debe fallar, siempre debe tener un valor
+      if (!serviceDuration || isNaN(serviceDuration) || serviceDuration <= 0) {
+        console.log(`⚠️ ADVERTENCIA: No se encontró serviceDuration válido después de todos los intentos. Usando 60 minutos por defecto.`);
         serviceDuration = 60; // Duración por defecto de 60 minutos
       }
+      
+      // Asegurar que serviceDuration sea un número válido
+      serviceDuration = parseInt(serviceDuration) || 60;
       
       console.log(`📊 ServiceDuration encontrado: ${serviceDuration} minutos`);
       console.log(`📊 ServiceNumber final usado: ${serviceNumber}`);
