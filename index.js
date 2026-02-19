@@ -2279,12 +2279,22 @@ app.post('/api/flujo-reagendar', async (req, res) => {
 
       // Obtener automáticamente las próximas fechas disponibles
       console.log('📅 Obteniendo fechas disponibles automáticamente...');
-      const serviceNumber = clientData.serviceNumber || '1';
+      
+      // Obtener el número de servicio de la cita
+      let serviceNumber = clientData.serviceNumber || '1';
+      
+      // Asegurar que serviceNumber sea string
+      if (typeof serviceNumber !== 'string') {
+        serviceNumber = String(serviceNumber);
+      }
+      
+      console.log(`📊 ServiceNumber obtenido de la cita: ${serviceNumber}`);
       
       // Usar la lógica de consulta-disponibilidad para obtener los próximos 4 días
       let configData;
       try {
         configData = await getConfigData();
+        console.log(`📊 Servicios disponibles en configData: ${configData.services.length} registros`);
       } catch (error) {
         console.error('❌ Error obteniendo configuración:', error.message);
         return res.json({ 
@@ -2295,12 +2305,47 @@ app.post('/api/flujo-reagendar', async (req, res) => {
       }
 
       const calendarId = findData('1', configData.calendars, 0, 1);
-      const serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+      console.log(`📅 Calendar ID encontrado: ${calendarId ? 'Sí' : 'No'}`);
       
-      if (!calendarId || !serviceDuration) {
+      // Buscar el servicio - intentar con diferentes formatos
+      let serviceDuration = findData(serviceNumber, configData.services, 0, 1);
+      
+      // Si no se encuentra, intentar con el número como entero
+      if (!serviceDuration && !isNaN(serviceNumber)) {
+        console.log(`⚠️ Servicio ${serviceNumber} no encontrado como string, intentando como número`);
+        serviceDuration = findData(parseInt(serviceNumber), configData.services, 0, 1);
+      }
+      
+      // Si aún no se encuentra, intentar con '1' como fallback
+      if (!serviceDuration) {
+        console.log(`⚠️ Servicio ${serviceNumber} no encontrado, usando servicio '1' como fallback`);
+        serviceNumber = '1';
+        serviceDuration = findData('1', configData.services, 0, 1);
+        
+        // Si '1' tampoco funciona, intentar con número 1
+        if (!serviceDuration) {
+          serviceDuration = findData(1, configData.services, 0, 1);
+        }
+      }
+      
+      console.log(`📊 ServiceDuration encontrado: ${serviceDuration ? serviceDuration + ' minutos' : 'No'}`);
+      console.log(`📊 ServiceNumber final usado: ${serviceNumber}`);
+      
+      if (!calendarId) {
+        console.error('❌ Calendar ID no encontrado');
         return res.json({ 
           success: false,
-          respuesta: '❌ Error obteniendo datos del calendario. Por favor, intenta más tarde.',
+          respuesta: '❌ Error: No se encontró el calendario. Por favor, contacta con soporte.',
+          siguiente_paso: 'validar_codigo'
+        });
+      }
+      
+      if (!serviceDuration) {
+        console.error(`❌ Servicio no encontrado. ServiceNumber intentado: ${serviceNumber}`);
+        console.error(`📊 Servicios disponibles en configData:`, configData.services.slice(1).map(s => `ID: ${s[0]}, Duración: ${s[1]}`).join(' | '));
+        return res.json({ 
+          success: false,
+          respuesta: '❌ Error: No se encontró el servicio asociado a tu cita. Por favor, contacta con soporte.',
           siguiente_paso: 'validar_codigo'
         });
       }
