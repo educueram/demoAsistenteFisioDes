@@ -1580,9 +1580,14 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
       };
     }
 
-    // PASO 3: Preparar datos del evento
-    const startTimeFormatted = moment(eventData.startTime).tz(config.timezone.default).format();
-    const endTimeFormatted = moment(eventData.endTime).tz(config.timezone.default).format();
+    // PASO 3: Preparar datos del evento (aceptar Date o string ISO)
+    const startMoment = moment(eventData.startTime).tz(config.timezone.default);
+    const endMoment = moment(eventData.endTime).tz(config.timezone.default);
+    if (!startMoment.isValid() || !endMoment.isValid()) {
+      throw new Error(`Fechas inválidas: start=${eventData.startTime}, end=${eventData.endTime}`);
+    }
+    const startTimeFormatted = startMoment.format();
+    const endTimeFormatted = endMoment.format();
 
     const event = {
       summary: eventData.title,
@@ -1646,13 +1651,16 @@ async function createEventWithCustomId(calendarId, eventData, customEventId) {
     };
 
   } catch (error) {
+    const apiError = error.response?.data?.error?.message || error.message;
+    const code = error.response?.data?.error?.code || error.code;
     console.error(`❌ Error creando/actualizando evento: ${error.message}`);
     console.error(`📚 Stack:`, error.stack);
     console.error(`📚 Response data:`, error.response?.data);
     return {
       success: false,
-      error: error.message,
-      message: '❌ Error creando evento en el calendario'
+      error: apiError || error.message,
+      message: '❌ Error creando evento en el calendario',
+      details: code ? `Code: ${code}` : undefined
     };
   }
 }

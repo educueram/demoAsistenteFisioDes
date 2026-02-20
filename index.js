@@ -4284,11 +4284,12 @@ app.post('/api/agenda-cita', async (req, res) => {
     }
 
     console.log('=== BÚSQUEDA EN BASE DE DATOS ===');
-    const calendarId = findData(calendarNumber, configData.calendars, 0, 1);
-    console.log('calendarId encontrado:', calendarId);
-    if (!calendarId) {
-      console.log(`❌ ERROR: Calendario no encontrado para número: ${calendarNumber}`);
-      return res.json({ respuesta: '🚫 Error: El calendario solicitado no fue encontrado.' });
+    const calendarIdRaw = findData(calendarNumber, configData.calendars, 0, 1);
+    const calendarId = calendarIdRaw && typeof calendarIdRaw === 'string' ? calendarIdRaw.trim() : (calendarIdRaw ? String(calendarIdRaw) : null);
+    console.log('calendarId encontrado:', calendarId ? `${calendarId.substring(0, 40)}...` : calendarId);
+    if (!calendarId || calendarId.length < 5) {
+      console.log(`❌ ERROR: Calendario no encontrado o ID inválido para número: ${calendarNumber}`);
+      return res.json({ respuesta: '🚫 Error: El calendario solicitado no fue encontrado. Verifica que existan calendarios activos en la base de datos (tabla calendario).' });
     }
 
     const profesionalName = findData(calendarNumber, configData.calendars, 0, 2);
@@ -4355,9 +4356,17 @@ Agendado por: Agente de WhatsApp`;
         return res.json({ 
           respuesta: `❌ ¡Demasiado tarde! El horario de las ${formatTimeTo12Hour(time)} ya fue reservado.` 
         });
-      } else {
-        return res.json({ respuesta: '❌ Error creando la cita. Inténtalo de nuevo.' });
       }
+      const errDetail = createResult.error || createResult.message || '';
+      const errHint = (errDetail && (errDetail.includes('403') || errDetail.toLowerCase().includes('forbidden')))
+        ? ' Comprueba que el calendario de Google esté compartido con la cuenta de servicio (permiso de escritura).'
+        : (errDetail && errDetail.toLowerCase().includes('not found'))
+          ? ' Comprueba que el ID del calendario en la base de datos sea correcto.'
+          : '';
+      console.error('❌ Error al crear evento en Google Calendar:', errDetail, createResult.details || '');
+      return res.json({
+        respuesta: `❌ Error creando la cita en el calendario.${errHint || ''} Detalle: ${errDetail || 'Error desconocido'}.`
+      });
     }
 
     console.log('✅ Evento creado exitosamente con código:', codigoReserva);
